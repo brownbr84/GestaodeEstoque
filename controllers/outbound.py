@@ -128,3 +128,51 @@ def despachar_pedido_wms(true_rowid, req_id_visual, polo, destino, conferidos_ta
         msg_sucesso = "Carga em Trânsito enviada!" if is_transferencia else "Pedido de Obra despachado!"
         return True, doc_ref, msg_sucesso
     except Exception as e: return False, "", f"Erro ao despachar: {str(e)}"
+
+# Adicione no final do seu tracebox/controllers/outbound.py
+
+def buscar_item_para_baixa(pesquisa, polo):
+    """Busca o item no estoque para baixa, seja por TAG (Ativo) ou Código (Lote/Consumo)."""
+    pesquisa_limpa = str(pesquisa).strip().upper()
+    
+    # 1. Tenta encontrar exatamente pela TAG
+    df_tag = carregar_dados("SELECT id, codigo, descricao, num_tag, quantidade, tipo_material FROM imobilizado WHERE upper(num_tag) = ? AND localizacao = ? AND status = 'Disponível'", (pesquisa_limpa, polo))
+    if not df_tag.empty:
+        return df_tag.iloc[0], 'ATIVO'
+
+    # 2. Se não achar por TAG, tenta por CÓDIGO do Produto (Para Lotes)
+    df_lote = carregar_dados("SELECT id, codigo, descricao, num_tag, quantidade, tipo_material FROM imobilizado WHERE upper(codigo) = ? AND localizacao = ? AND status = 'Disponível' AND (num_tag IS NULL OR trim(num_tag) = '') LIMIT 1", (pesquisa_limpa, polo))
+    if not df_lote.empty:
+        return df_lote.iloc[0], 'LOTE'
+
+    return None, None
+
+def realizar_baixa_excepcional(carrinho, motivo, documento, usuario, polo):
+    """Executa a baixa no banco de dados e gera o log de auditoria pesado."""
+    try:
+        from datetime import datetime
+        agora = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        tipo_mov = f"Baixa Excepcional - {motivo}"
+        doc_ref = f"{documento} | BXA-{datetime.now().strftime('%H%M%S')}"
+
+        for item in carrinho:
+            id_item = int(item['id'])
+            
+            if item['tipo'] == 'ATIVO':
+                # Remove do estoque alterando o status
+                executar_query("UPDATE imobilizado SET status = 'Baixado' WHERE id = ?", (id_item,))
+                # Carimbo de Auditoria
+                executar_query("INSERT INTO movimentacoes (ferramenta_id, tipo, responsavel, destino_projeto, documento) VALUES (?, ?, ?, ?, ?)", 
+                               (id_item, tipo_mov, usuario, 'Ajuste/Sucata', doc_ref))
+            else:
+                # É Consumo/Lote: Deduz a quantidade
+                qtd_baixar = int(item['qtd_baixar'])
+                executar_query("UPDATE imobilizado SET quantidade = quantidade - ? WHERE id = ?", (qtd_baixar, id_item))
+                # Carimbo de Auditoria detalhando a quantidade
+                detalhes_lote = f"{doc_ref} | Qtd Baixada: {qtd_baixar}"
+                executar_query("INSERT INTO movimentacoes (ferramenta_id, tipo, responsavel, destino_projeto, documento) VALUES (?, ?, ?, ?, ?)", 
+                               (id_item, tipo_mov, usuario, 'Ajuste/Sucata', detalhes_lote))
+
+        return True, "✅ Baixa Excepcional registada e auditada com sucesso!"
+    except Exception as e:
+        return False, f"Erro no banco de dados: {str(e)}"

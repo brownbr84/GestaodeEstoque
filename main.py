@@ -15,10 +15,8 @@ st.set_page_config(
 # ==========================================
 from views.auth import tela_login
 from views.inventario import tela_inventario_ciclico
-from views.recebimento import tela_recebimento_projetos
-from views.movimentacao import tela_movimentacao
+from views.inbound import tela_logistica_inbound
 from views.matriz_fisica import tela_matriz_fisica
-from views.saidas import tela_saidas_requisicoes
 from views.torre_controle import tela_torre_controle
 from views.cadastro import tela_cadastro_produtos
 from views.produto import tela_produto
@@ -26,12 +24,12 @@ from views.manutencao import tela_gestao_manutencao
 from views.outbound import tela_logistica_outbound
 from views.requisicao import tela_fazer_requisicao
 
-
 # =====================================================================
-# 3. MOTOR DE IGNIÇÃO (Injeta tabelas e dados de teste)
+# 3. MOTOR DE IGNIÇÃO (Otimizado para rodar APENAS 1 VEZ)
 # =====================================================================
+@st.cache_resource # <--- ESTA É A MÁGICA DE PERFORMANCE!
 def inicializar_e_popular_banco():
-    """Motor de Ignição: Cria o BD e garante que as colunas existam."""
+    """Motor de Ignição: Cria o BD e garante que as colunas existam (Roda 1x por sessão do servidor)."""
     # 1. Tabela Imobilizado
     executar_query("""
         CREATE TABLE IF NOT EXISTS imobilizado (
@@ -45,7 +43,7 @@ def inicializar_e_popular_banco():
         )
     """)
 
-    # 2. Tabela Movimentações (Corrigindo o nome da coluna de data)
+    # 2. Tabela Movimentações
     executar_query("""
         CREATE TABLE IF NOT EXISTS movimentacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -55,6 +53,16 @@ def inicializar_e_popular_banco():
             destino_projeto TEXT, 
             documento TEXT, 
             data_movimentacao DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # 3. Tabela de Requisições (Garantindo que existe para o Outbound/Inbound não quebrar)
+    executar_query("""
+        CREATE TABLE IF NOT EXISTS requisicoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            solicitante TEXT, polo_origem TEXT, destino_projeto TEXT,
+            status TEXT DEFAULT 'Pendente', data_solicitacao DATETIME DEFAULT CURRENT_TIMESTAMP,
+            motivo_cancelamento TEXT, cancelado_por TEXT
         )
     """)
 
@@ -76,24 +84,25 @@ def inicializar_e_popular_banco():
             ("CNS-001", "Parafuso Sextavado", "Gerdau", "8x40", "", 500, "Disponível", "Filial CTG", "Insumos", 0.50, "Consumo"),
             ("CNS-002", "Fita Isolante 3M", "3M", "20m", "", 50, "Disponível", "Filial CTG", "Insumos", 8.90, "Consumo")
         ]
-
         for p in produtos_teste:
             executar_query("""
                 INSERT INTO imobilizado (codigo, descricao, marca, modelo, num_tag, quantidade, status, localizacao, categoria, valor_unitario, tipo_material)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, p)
+            
+    return True # Confirmação de que rodou
 
 # ==========================================
 # 4. FUNÇÃO PRINCIPAL E ROTEAMENTO
 # ==========================================
 def main():
-    # --- O MOTOR DE IGNIÇÃO RODA AQUI, ANTES DE TUDO ---
+    # --- O MOTOR DE IGNIÇÃO RODA AQUI ---
     inicializar_e_popular_banco()
 
     # 1. VALIDAÇÃO DE SESSÃO (A Fechadura)
     if st.session_state.get('usuario_logado') is None:
         tela_login()
-        return # O return aqui é crítico: impede que o resto do código (o menu) carregue!
+        return # Impede que o resto do código (o menu) carregue!
 
     # 2. DADOS DO USUÁRIO
     usuario = st.session_state['usuario_logado']
@@ -101,11 +110,6 @@ def main():
     # 3. SIDEBAR E NAVEGAÇÃO
     st.sidebar.markdown("<h2 style='color: #2563eb; text-align: center; margin-bottom:0;'>💠 TraceBox</h2>", unsafe_allow_html=True)
     st.sidebar.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em;'>Credencial: {usuario['nome'].upper()} [{usuario['perfil']}]</p>", unsafe_allow_html=True)
-    
-    if st.sidebar.button("🚪 Encerrar Sessão", use_container_width=True): 
-        st.session_state['usuario_logado'] = None
-        st.rerun()
-        
     st.sidebar.divider()
     
     opcoes_menu = [
@@ -122,7 +126,8 @@ def main():
     menu = st.sidebar.radio("Navegação", opcoes_menu)
 
     st.sidebar.divider()
-    if st.sidebar.button("Sair (Logout)", use_container_width=True):
+    # Botão de Logout Unificado na Base do Menu
+    if st.sidebar.button("🚪 Sair (Logout)", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
@@ -134,27 +139,15 @@ def main():
         tela_torre_controle()
 
     elif menu == "📦 Consulta de Matriz Física":
-        # AQUI ESTÁ O GATILHO DA FICHA TÉCNICA
+        # AQUI ESTÁ O GATILHO DA FICHA TÉCNICA (Mestre-Detalhe)
         if st.session_state.get('produto_selecionado'):
-            tela_produto() # Mostra o Prontuário Médico
+            tela_produto() 
         else:
-            tela_matriz_fisica() # Mostra a Tabela Limpa
+            tela_matriz_fisica() 
 
     elif menu == "➕ Cadastrar Novo Ativo":
         st.session_state['produto_selecionado'] = None
         tela_cadastro_produtos()
-
-    elif menu == "📤 Saídas (Fila de Requisições)":
-        st.session_state['produto_selecionado'] = None
-        tela_saidas_requisicoes()
-
-    elif menu == "📥 Inbound (Recebimento)":
-        st.session_state['produto_selecionado'] = None
-        tela_recebimento_projetos()
-
-    elif menu == "🔄 Transferências":
-        st.session_state['produto_selecionado'] = None
-        tela_movimentacao()
         
     elif menu == "📋 Inventário Cíclico":
         st.session_state['produto_selecionado'] = None
@@ -163,6 +156,10 @@ def main():
     elif menu == "🛠️ Manutenção":
         st.session_state['produto_selecionado'] = None
         tela_gestao_manutencao()
+        
+    elif menu == "📝 Fazer Requisição (Solicitante)":
+        st.session_state['produto_selecionado'] = None
+        tela_fazer_requisicao()
     
     elif menu == "📤 Logística Outbound (Saída)":
         st.session_state['produto_selecionado'] = None
@@ -170,11 +167,7 @@ def main():
 
     elif menu == "📥 Logística Inbound (Entrada)":
         st.session_state['produto_selecionado'] = None
-        st.info("Módulo Inbound em construção...") # Rota provisória até criarmos a tela
-
-    elif menu == "📝 Fazer Requisição (Solicitante)":
-        st.session_state['produto_selecionado'] = None
-        tela_fazer_requisicao()
+        tela_logistica_inbound()
 
 if __name__ == "__main__":
     main()
