@@ -8,7 +8,7 @@ from controllers.outbound import (
     carregar_detalhes_picking, obter_tags_disponiveis, despachar_pedido_wms,
     listar_itens_em_transito
 )
-from database.queries import carregar_dados 
+from database.queries import carregar_dados
 
 def gerar_csv(df):
     return df.to_csv(index=False, sep=';').encode('utf-8-sig')
@@ -31,7 +31,7 @@ def tela_logistica_outbound():
 
     with aba_projetos:
         # ==============================================================
-        # PASSO 1: FILA DE PEDIDOS (Visão Otimizada)
+        # PASSO 1: FILA DE PEDIDOS
         # ==============================================================
         if st.session_state['wms_passo'] == 'fila':
             c_polo, _ = st.columns([1, 2])
@@ -46,7 +46,6 @@ def tela_logistica_outbound():
             if df_fila.empty: 
                 st.success(f"Nenhum pedido registado para {polo_origem}.")
             else:
-                # PAINEL DE INDICADORES (Conta tudo)
                 pendentes = len(df_fila[df_fila['status_clean'] == 'PENDENTE'])
                 concluidas = len(df_fila[df_fila['status_clean'] == 'CONCLUÍDA'])
                 canceladas = len(df_fila[df_fila['status_clean'] == 'CANCELADA'])
@@ -59,8 +58,6 @@ def tela_logistica_outbound():
                 st.divider()
 
                 st.subheader("📋 Fila de Operação")
-                
-                # --- O SEGREDO DA UX: FILTRO RÁPIDO ---
                 filtro_exibicao = st.radio(
                     "Filtro de Visão:",
                     ["🔥 Foco nos Pendentes", "📚 Histórico (Concluídas/Canceladas)", "📋 Mostrar Tudo"],
@@ -86,15 +83,12 @@ def tela_logistica_outbound():
                     
                     evento_selecao = st.dataframe(
                         df_exibicao, 
-                        use_container_width=True, 
-                        hide_index=True, 
-                        on_select="rerun", 
-                        selection_mode="single-row"
+                        use_container_width=True, hide_index=True, 
+                        on_select="rerun", selection_mode="single-row"
                     )
                     
                     if len(evento_selecao.selection.rows) > 0:
                         idx_linha = evento_selecao.selection.rows[0]
-                        # Pega o dado na df_filtrada para não haver erro de indexação!
                         req_selecionada = df_filtrada.iloc[idx_linha]
                         
                         req_id = req_selecionada['id_num']
@@ -136,14 +130,13 @@ def tela_logistica_outbound():
 
                         elif status_pedido == 'CONCLUÍDA':
                             st.success("✅ Este pedido já foi processado, separado e despachado com sucesso!")
-                            
                         elif status_pedido == 'CANCELADA':
                             st.error("🚫 Pedido cancelado.")
                             if 'motivo_cancelamento' in req_selecionada and pd.notna(req_selecionada['motivo_cancelamento']):
                                 st.warning(f"**Motivo:** {req_selecionada['motivo_cancelamento']} (por {req_selecionada.get('cancelado_por', 'Sistema')})")
 
         # ==============================================================
-        # PASSO 2: WIZARD DE SEPARAÇÃO E IMPRESSÃO
+        # PASSO 2: WIZARD DE SEPARAÇÃO E IMPRESSÃO (COM SCANNER)
         # ==============================================================
         elif st.session_state['wms_passo'] == 'picking':
             req_id = st.session_state['wms_req_id']
@@ -200,7 +193,7 @@ def tela_logistica_outbound():
             df_lotes = df_itens[df_itens['exige_tag'] == False]
 
             guias = []
-            if not df_ativos.empty: guias.append("🔫 1. Ativos (Bipar/Manual)")
+            if not df_ativos.empty: guias.append("🔫 1. Ativos (Scanner/Manual)")
             if not df_lotes.empty: guias.append("📦 2. Consumo (Lotes)")
             guias.append("✅ 3. Revisão Final")
             
@@ -223,18 +216,33 @@ def tela_logistica_outbound():
                     if lidas < int(r['qtd']): return False
                 return True
 
-            if aba_atual == "🔫 1. Ativos (Bipar/Manual)":
+            # ---------------------------------------------------------
+            # MÓDULO SCANNER
+            # ---------------------------------------------------------
+            if aba_atual == "🔫 1. Ativos (Scanner/Manual)":
                 col_leitor, col_btn = st.columns([3, 1])
-                with col_leitor: st.subheader("1. Leitura Rápida via Coletor")
+                with col_leitor: st.subheader("📷 1. Leitura via Scanner QR Code")
                 with col_btn: 
                     if st.button("🧹 Resetar Leituras", use_container_width=True): 
                         st.session_state['wms_tags_bipadas'] = {}
                         st.rerun()
 
                 with st.form("form_leitor_wms", clear_on_submit=True):
-                    tag_lida = st.text_input("Bipe a TAG aqui e aperte Enter:", key="input_leitor")
-                    if st.form_submit_button("Registrar TAG", use_container_width=True) and tag_lida:
-                        tag_limpa = str(tag_lida).strip().upper()
+                    tag_lida = st.text_input("Bipe o QR Code ou digite a TAG manualmente:", key="input_leitor", placeholder="Ex: TAG-1001 ou bipar etiqueta...")
+                    submit_leitor = st.form_submit_button("Registrar TAG", use_container_width=True, type="primary")
+                    
+                    if submit_leitor and tag_lida:
+                        tag_crua = str(tag_lida).strip().upper()
+                        tag_limpa = tag_crua
+                        
+                        if "TAG:" in tag_crua:
+                            try:
+                                for p in tag_crua.split("|"):
+                                    if p.startswith("TAG:"):
+                                        tag_limpa = p.replace("TAG:", "").strip()
+                                        break
+                            except: pass
+
                         df_check = carregar_dados("SELECT codigo FROM imobilizado WHERE upper(num_tag) = ? AND localizacao = ? AND status = 'Disponível'", (tag_limpa, polo))
                         
                         if df_check.empty: st.error(f"🚨 A TAG '{tag_limpa}' não foi encontrada ou não está disponível neste polo.")
@@ -246,20 +254,20 @@ def tela_logistica_outbound():
                                 qtd_pedida = int(df_ativos[df_ativos['codigo'] == cod_da_tag]['qtd'].iloc[0])
                                 lidas_deste_cod = sum(1 for info in st.session_state['wms_tags_bipadas'].values() if info['codigo'] == cod_da_tag)
                                 
-                                if tag_limpa in st.session_state['wms_tags_bipadas']: st.warning(f"⚠️ A TAG '{tag_limpa}' já foi separada.")
+                                if tag_limpa in st.session_state['wms_tags_bipadas']: st.warning(f"⚠️ A TAG '{tag_limpa}' já foi separada na caixa.")
                                 elif lidas_deste_cod >= qtd_pedida: st.error(f"⛔ Você já bipou todas as {qtd_pedida} unidades de {cod_da_tag}.")
                                 else:
-                                    st.session_state['wms_tags_bipadas'][tag_limpa] = {'codigo': cod_da_tag, 'metodo': 'Coletor'}
+                                    st.session_state['wms_tags_bipadas'][tag_limpa] = {'codigo': cod_da_tag, 'metodo': 'Scanner'}
                                     if checar_ativos_completos():
                                         st.toast("🎉 Todos os ativos separados! Avançando...", icon="🚀")
                                         st.session_state['wms_tab_idx'] += 1
                                         time.sleep(0.6)
                                         st.rerun()
                                     else:
-                                        st.success(f"✅ TAG {tag_limpa} separada via Coletor!")
+                                        st.success(f"✅ TAG {tag_limpa} capturada com sucesso!")
 
                 st.divider()
-                st.subheader("2. Seleção Manual")
+                st.subheader("2. Seleção Manual (Contingência)")
                 
                 for _, row in df_ativos.iterrows():
                     cod = row['codigo']
@@ -282,7 +290,7 @@ def tela_logistica_outbound():
                             selecionados = st.multiselect(f"Faltam {faltam} un. Selecione na lista:", options=opcoes_manuais, key=f"manual_{cod}")
                         with col_btn_man:
                             st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-                            if st.button("Salvar Seleção", key=f"btn_man_{cod}", type="secondary", use_container_width=True):
+                            if st.button("Salvar Manual", key=f"btn_man_{cod}", type="secondary", use_container_width=True):
                                 if len(selecionados) > faltam: st.error(f"Selecione apenas {faltam} opções!")
                                 elif len(selecionados) == 0: st.warning("Selecione ao menos uma TAG.")
                                 else:
@@ -477,4 +485,3 @@ def tela_logistica_outbound():
                                 time.sleep(1.5)
                                 st.rerun()
                             else: st.error(msg)
-            else: st.info("A lista de baixa está vazia. Use a caixa de pesquisa acima.")

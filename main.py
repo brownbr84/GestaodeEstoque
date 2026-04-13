@@ -3,6 +3,17 @@ import streamlit as st
 import pandas as pd
 from database.queries import executar_query, carregar_dados
 
+def obter_identidade_visual():
+    """Busca nome e logo da empresa no banco para aplicar o branding."""
+    from database.queries import carregar_dados
+    try:
+        df = carregar_dados("SELECT nome_empresa, logo_base64 FROM configuracoes WHERE id = 1")
+        if not df.empty:
+            return df.iloc[0]
+    except:
+        pass
+    return None
+
 # 1. Configuração global da página (DEVE ser a primeira linha do Streamlit)
 st.set_page_config(
     page_title="TraceBox | Torre de Controle", 
@@ -23,14 +34,14 @@ from views.produto import tela_produto
 from views.manutencao import tela_gestao_manutencao
 from views.outbound import tela_logistica_outbound
 from views.requisicao import tela_fazer_requisicao
+from views.relatorios import tela_central_relatorios # <-- Importação do Relatório aqui!
 
 # =====================================================================
 # 3. MOTOR DE IGNIÇÃO (Otimizado para rodar APENAS 1 VEZ)
 # =====================================================================
-@st.cache_resource # <--- ESTA É A MÁGICA DE PERFORMANCE!
+@st.cache_resource 
 def inicializar_e_popular_banco():
-    """Motor de Ignição: Cria o BD e garante que as colunas existam (Roda 1x por sessão do servidor)."""
-    # 1. Tabela Imobilizado
+    """Motor de Ignição: Cria o BD e garante que as colunas existam."""
     executar_query("""
         CREATE TABLE IF NOT EXISTS imobilizado (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -43,7 +54,6 @@ def inicializar_e_popular_banco():
         )
     """)
 
-    # 2. Tabela Movimentações
     executar_query("""
         CREATE TABLE IF NOT EXISTS movimentacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,7 +66,6 @@ def inicializar_e_popular_banco():
         )
     """)
 
-    # 3. Tabela de Requisições (Garantindo que existe para o Outbound/Inbound não quebrar)
     executar_query("""
         CREATE TABLE IF NOT EXISTS requisicoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,7 +75,6 @@ def inicializar_e_popular_banco():
         )
     """)
 
-    # RADAR DE SEGURANÇA: Garante as colunas em tabelas que já existiam
     try:
         df_mov = carregar_dados("PRAGMA table_info(movimentacoes)")
         cols_mov = df_mov['name'].str.lower().tolist()
@@ -74,7 +82,6 @@ def inicializar_e_popular_banco():
             executar_query("ALTER TABLE movimentacoes ADD COLUMN data_movimentacao DATETIME DEFAULT CURRENT_TIMESTAMP")
     except: pass
 
-    # Injeção de Dados de Teste
     df_check = carregar_dados("SELECT COUNT(*) as total FROM imobilizado")
     if not df_check.empty and df_check.iloc[0]['total'] == 0:
         produtos_teste = [
@@ -90,28 +97,51 @@ def inicializar_e_popular_banco():
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, p)
             
-    return True # Confirmação de que rodou
+    return True 
 
 # ==========================================
 # 4. FUNÇÃO PRINCIPAL E ROTEAMENTO
 # ==========================================
 def main():
-    # --- O MOTOR DE IGNIÇÃO RODA AQUI ---
     inicializar_e_popular_banco()
 
-    # 1. VALIDAÇÃO DE SESSÃO (A Fechadura)
+    # 1. VALIDAÇÃO DE SESSÃO
     if st.session_state.get('usuario_logado') is None:
         tela_login()
-        return # Impede que o resto do código (o menu) carregue!
-
-    # 2. DADOS DO USUÁRIO
+        return 
+    
+    # 2. BUSCA DA IDENTIDADE VISUAL E USUÁRIO
+    id_visual = obter_identidade_visual()
     usuario = st.session_state['usuario_logado']
     
-    # 3. SIDEBAR E NAVEGAÇÃO
+   # ==========================================
+    # 3. CONSTRUÇÃO DO MENU LATERAL (CO-BRANDING)
+    # ==========================================
+    
+    # 3.1 TOPO: MARCA DO SISTEMA (TRACEBOX - SEMPRE PRESENTE)
     st.sidebar.markdown("<h2 style='color: #2563eb; text-align: center; margin-bottom:0;'>💠 TraceBox</h2>", unsafe_allow_html=True)
-    st.sidebar.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em;'>Credencial: {usuario['nome'].upper()} [{usuario['perfil']}]</p>", unsafe_allow_html=True)
+    st.sidebar.markdown("<p style='text-align: center; color: gray; font-size: 0.8em; margin-top: -5px;'>WMS Enterprise Solution</p>", unsafe_allow_html=True)
+
+    # 3.2 MEIO: MARCA DO CLIENTE (DINÂMICO)
+    if id_visual is not None and id_visual['logo_base64']:
+        st.sidebar.write("<br>", unsafe_allow_html=True)
+        # Exibe o logo do cliente
+        st.sidebar.image(f"data:image/png;base64,{id_visual['logo_base64']}", use_container_width=True)
+        # Exibe o nome do cliente com uma linha separadora elegante
+        st.sidebar.markdown(f"""
+            <div style='text-align: center; padding-top: 5px; border-bottom: 1px solid #4b5563; padding-bottom: 10px; margin-bottom: 5px;'>
+                <span style='font-size: 0.85em; color: #9ca3af; font-weight: bold;'>{id_visual['nome_empresa'].upper()}</span>
+            </div>
+        """, unsafe_allow_html=True)
+    else:
+        # Se não tiver logo de cliente, põe apenas um divisor para manter a elegância
+        st.sidebar.divider()
+
+    # 3.3 Identificação do usuário logado
+    st.sidebar.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em; margin-top: 10px;'>👤 {usuario['nome'].upper()} [{usuario['perfil']}]</p>", unsafe_allow_html=True)
     st.sidebar.divider()
     
+    # 4. OPÇÕES DO MENU
     opcoes_menu = [
         "📈 Torre de Controle", 
         "📦 Consulta de Matriz Física", 
@@ -120,54 +150,59 @@ def main():
         "🛠️ Manutenção",
         "📝 Fazer Requisição (Solicitante)",
         "📤 Logística Outbound (Saída)",   
-        "📥 Logística Inbound (Entrada)"   
+        "📥 Logística Inbound (Entrada)",
+        "🏷️ Etiquetas QR Code",
+        "🖨️ Central de Relatórios",
+        "⚙️ Configurações do Sistema"
     ]
     
     menu = st.sidebar.radio("Navegação", opcoes_menu)
 
     st.sidebar.divider()
-    # Botão de Logout Unificado na Base do Menu
     if st.sidebar.button("🚪 Sair (Logout)", use_container_width=True):
         st.session_state.clear()
         st.rerun()
 
     # ==========================================
-    # 4. ROTEAMENTO PARA AS VIEWS
+    # 5. ROTEAMENTO PARA AS VIEWS
     # ==========================================
     if menu == "📈 Torre de Controle":
         st.session_state['produto_selecionado'] = None 
         tela_torre_controle()
-
     elif menu == "📦 Consulta de Matriz Física":
-        # AQUI ESTÁ O GATILHO DA FICHA TÉCNICA (Mestre-Detalhe)
         if st.session_state.get('produto_selecionado'):
             tela_produto() 
         else:
             tela_matriz_fisica() 
-
     elif menu == "➕ Cadastrar Novo Ativo":
         st.session_state['produto_selecionado'] = None
         tela_cadastro_produtos()
-        
     elif menu == "📋 Inventário Cíclico":
         st.session_state['produto_selecionado'] = None
         tela_inventario_ciclico() 
-    
     elif menu == "🛠️ Manutenção":
         st.session_state['produto_selecionado'] = None
         tela_gestao_manutencao()
-        
     elif menu == "📝 Fazer Requisição (Solicitante)":
         st.session_state['produto_selecionado'] = None
         tela_fazer_requisicao()
-    
     elif menu == "📤 Logística Outbound (Saída)":
         st.session_state['produto_selecionado'] = None
         tela_logistica_outbound()
-
     elif menu == "📥 Logística Inbound (Entrada)":
         st.session_state['produto_selecionado'] = None
         tela_logistica_inbound()
+    elif menu == "🏷️ Etiquetas QR Code":
+        st.session_state['produto_selecionado'] = None
+        from views.etiquetas import tela_gerador_etiquetas
+        tela_gerador_etiquetas()
+    elif menu == "🖨️ Central de Relatórios":
+        st.session_state['produto_selecionado'] = None
+        tela_central_relatorios()
+    elif menu == "⚙️ Configurações do Sistema":
+        st.session_state['produto_selecionado'] = None
+        from views.configuracoes import tela_configuracoes_globais
+        tela_configuracoes_globais()
 
 if __name__ == "__main__":
     main()
