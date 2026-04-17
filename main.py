@@ -37,11 +37,14 @@ from views.requisicao import tela_fazer_requisicao
 from views.relatorios import tela_central_relatorios # <-- Importação do Relatório aqui!
 
 # =====================================================================
-# 3. MOTOR DE IGNIÇÃO (Otimizado para rodar APENAS 1 VEZ)
+# 3. MOTOR DE IGNIÇÃO
 # =====================================================================
+
 @st.cache_resource 
 def inicializar_e_popular_banco():
-    """Motor de Ignição: Cria o BD e garante que as colunas existam."""
+    """Motor de Ignição PROD: Cria o BD e garante que as colunas existam, mas SEM DADOS FALSOS."""
+    
+    # 1. Cria Tabela Imobilizado
     executar_query("""
         CREATE TABLE IF NOT EXISTS imobilizado (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,6 +57,7 @@ def inicializar_e_popular_banco():
         )
     """)
 
+    # 2. Cria Tabela Movimentações
     executar_query("""
         CREATE TABLE IF NOT EXISTS movimentacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -66,6 +70,7 @@ def inicializar_e_popular_banco():
         )
     """)
 
+    # 3. Cria Tabela Requisições
     executar_query("""
         CREATE TABLE IF NOT EXISTS requisicoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -74,7 +79,34 @@ def inicializar_e_popular_banco():
             motivo_cancelamento TEXT, cancelado_por TEXT
         )
     """)
+    
+    # 4. Cria Tabela de Manutenção
+    executar_query("""
+        CREATE TABLE IF NOT EXISTS manutencao_ordens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, ferramenta_id INTEGER, codigo_ferramenta TEXT,
+            data_entrada DATETIME, data_saida DATETIME, motivo_falha TEXT, diagnostico TEXT,
+            custo_reparo REAL DEFAULT 0.0, mecanico_responsavel TEXT, status_ordem TEXT DEFAULT 'Aberta',
+            solicitante TEXT, empresa_reparo TEXT, num_orcamento TEXT,
+            FOREIGN KEY(ferramenta_id) REFERENCES imobilizado(id)
+        )
+    """)
 
+    # 5. 🎨 CRIA A TABELA DE CONFIGURAÇÕES (WHITE-LABEL)
+    executar_query("""
+        CREATE TABLE IF NOT EXISTS configuracoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nome_empresa TEXT,
+            cnpj TEXT,
+            logo_base64 TEXT
+        )
+    """)
+
+    # Se a tabela de configurações estiver vazia, cria a linha base
+    df_config = carregar_dados("SELECT COUNT(*) as total FROM configuracoes")
+    if not df_config.empty and df_config.iloc[0]['total'] == 0:
+        executar_query("INSERT INTO configuracoes (nome_empresa, cnpj, logo_base64) VALUES ('TraceBox WMS', '', '')")
+
+    # Atualizações de Schema (Migrações Automáticas Seguras)
     try:
         df_mov = carregar_dados("PRAGMA table_info(movimentacoes)")
         cols_mov = df_mov['name'].str.lower().tolist()
@@ -82,22 +114,7 @@ def inicializar_e_popular_banco():
             executar_query("ALTER TABLE movimentacoes ADD COLUMN data_movimentacao DATETIME DEFAULT CURRENT_TIMESTAMP")
     except: pass
 
-    df_check = carregar_dados("SELECT COUNT(*) as total FROM imobilizado")
-    if not df_check.empty and df_check.iloc[0]['total'] == 0:
-        produtos_teste = [
-            ("PRD-001", "Furadeira de Impacto", "Bosch", "GSB 16 RE", "TAG-1001", 1, "Disponível", "Filial CTG", "Elétrica", 450.00, "Ativo"),
-            ("PRD-001", "Furadeira de Impacto", "Bosch", "GSB 16 RE", "TAG-1002", 1, "Disponível", "Filial CTG", "Elétrica", 450.00, "Ativo"),
-            ("PRD-002", "Serra Mármore", "Makita", "4100NH2Z", "TAG-2001", 1, "Disponível", "Filial CTG", "Elétrica", 550.00, "Ativo"),
-            ("CNS-001", "Parafuso Sextavado", "Gerdau", "8x40", "", 500, "Disponível", "Filial CTG", "Insumos", 0.50, "Consumo"),
-            ("CNS-002", "Fita Isolante 3M", "3M", "20m", "", 50, "Disponível", "Filial CTG", "Insumos", 8.90, "Consumo")
-        ]
-        for p in produtos_teste:
-            executar_query("""
-                INSERT INTO imobilizado (codigo, descricao, marca, modelo, num_tag, quantidade, status, localizacao, categoria, valor_unitario, tipo_material)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, p)
-            
-    return True 
+    return True
 
 # ==========================================
 # 4. FUNÇÃO PRINCIPAL E ROTEAMENTO

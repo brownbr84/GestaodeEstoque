@@ -15,7 +15,7 @@ def gerar_csv(df):
 
 def tela_logistica_outbound():
     setup_tabelas_outbound()
-    
+
     st.title("📤 Logística Outbound (Expedição)")
     st.caption("WMS Inteligente: Fila focada na operação, Coletor de Dados e Avanço Automático.")
     
@@ -136,7 +136,7 @@ def tela_logistica_outbound():
                                 st.warning(f"**Motivo:** {req_selecionada['motivo_cancelamento']} (por {req_selecionada.get('cancelado_por', 'Sistema')})")
 
         # ==============================================================
-        # PASSO 2: WIZARD DE SEPARAÇÃO E IMPRESSÃO (COM SCANNER)
+        # PASSO 2: WIZARD DE SEPARAÇÃO E IMPRESSÃO
         # ==============================================================
         elif st.session_state['wms_passo'] == 'picking':
             req_id = st.session_state['wms_req_id']
@@ -159,33 +159,60 @@ def tela_logistica_outbound():
                 df_print['CONFERÊNCIA (TAG)'] = "" 
                 df_print = df_print.rename(columns={'codigo': 'CÓD', 'descricao': 'DESCRIÇÃO', 'qtd': 'QTD PEDIDA'})
                 csv = gerar_csv(df_print)
-                st.download_button(label="📥 Baixar Planilha (.csv Excel)", data=csv, file_name=f"REQ_{req_id:04d}_Picking.csv", mime='text/csv')
+                st.download_button(label="📥 Baixar Planilha (.csv)", data=csv, file_name=f"REQ_{req_id:04d}_Picking.csv", mime='text/csv')
                 st.write("---")
                 
+                df_config = carregar_dados("SELECT nome_empresa, cnpj, logo_base64 FROM configuracoes WHERE id = 1")
+                nome_empresa = "TraceBox WMS"
+                cnpj_empresa = ""
+                logo_html = ""
+                if not df_config.empty:
+                    config = df_config.iloc[0]
+                    nome_empresa = config['nome_empresa'] or nome_empresa
+                    cnpj_empresa = f"<p style='margin: 0; font-size: 11px; color: #475569;'>CNPJ: {config['cnpj']}</p>" if config['cnpj'] else ""
+                    if config['logo_base64']:
+                        logo_html = f'<img src="data:image/png;base64,{config["logo_base64"]}" style="max-height: 60px;">'
+
                 html_table = df_print.to_html(index=False)
                 html_print_view = f"""
                 <html><head><style>
-                    body {{ font-family: sans-serif; color: black !important; background-color: white !important; padding: 10px; }}
-                    table {{ width: 100%; border-collapse: collapse; margin-top: 15px; color: black !important; }}
-                    th, td {{ border: 1px solid #000; padding: 8px; text-align: left; }}
-                    th {{ background-color: #e2e8f0; font-weight: bold; }}
-                    .cabecalho {{ border: 2px solid #000; padding: 15px; margin-bottom: 20px; border-radius: 5px; }}
-                    .linha-assinatura {{ display: flex; justify-content: space-between; margin-top: 20px; }}
+                    body {{ font-family: 'Segoe UI', sans-serif; color: black !important; background-color: white !important; padding: 10px; }}
+                    table {{ width: 100%; border-collapse: collapse; margin-top: 15px; color: black !important; font-size: 13px; }}
+                    th, td {{ border: 1px solid #94a3b8; padding: 8px; text-align: left; }}
+                    th {{ background-color: #f1f5f9; font-weight: bold; border-bottom: 2px solid #0f172a; text-transform: uppercase; }}
+                    tr:nth-child(even) {{ background-color: #f8fafc; }}
+                    .cabecalho {{ border: 2px solid #0f172a; padding: 15px; margin-bottom: 20px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }}
+                    .cabecalho-info {{ flex: 1; }}
+                    .cabecalho-logo {{ text-align: right; margin-left: 20px; }}
+                    .linha-assinatura {{ display: flex; justify-content: space-between; margin-top: 40px; text-align: center; }}
+                    .linha-assinatura div {{ width: 45%; border-top: 1px solid #000; padding-top: 5px; }}
                     @media print {{ #btn-imprimir {{ display: none; }} body {{ padding: 0; }} }}
                 </style></head><body>
-                    <button id="btn-imprimir" onclick="window.print()" style="padding: 10px 15px; margin-bottom: 15px; background: #2563eb; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold;">🖨️ Imprimir Folha de Separação</button>
+                    <button id="btn-imprimir" onclick="window.print()" style="padding: 10px 20px; margin-bottom: 15px; background: #2563eb; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);">🖨️ Imprimir Folha de Separação</button>
+                    
                     <div class="cabecalho">
-                        <h2 style="margin: 0 0 10px 0;">Folha de Separação: REQ-{req_id:04d}</h2>
-                        <p style="margin: 5px 0;"><strong>📍 Polo / Docas:</strong> {polo}</p>
-                        <p style="margin: 5px 0;"><strong>🎯 Destino da Carga:</strong> {destino}</p>
-                        <p style="margin: 5px 0;"><strong>👤 Solicitante:</strong> {solicitante}</p>
-                        <div class="linha-assinatura"><span><strong>Almoxarife:</strong> _________________________________________</span><span><strong>Data:</strong> ____/____/20____</span></div>
-                        <p style="margin: 20px 0 5px 0;"><strong>Assinatura Recebedor/Motorista:</strong> _________________________________________</p>
+                        <div class="cabecalho-info">
+                            <h2 style="margin: 0 0 10px 0; color: #0f172a;">Folha de Separação: REQ-{req_id:04d}</h2>
+                            <p style="margin: 5px 0;"><strong>📍 Polo Origem:</strong> {polo}</p>
+                            <p style="margin: 5px 0;"><strong>🎯 Destino da Carga:</strong> {destino}</p>
+                            <p style="margin: 5px 0;"><strong>👤 Solicitante:</strong> {solicitante}</p>
+                        </div>
+                        <div class="cabecalho-logo">
+                            {logo_html}
+                            <h3 style="margin: 5px 0 0 0; color: #0f172a;">{nome_empresa}</h3>
+                            {cnpj_empresa}
+                        </div>
                     </div>
+                    
                     {html_table}
+                    
+                    <div class="linha-assinatura">
+                        <div>Almoxarife Responsável<br><br>Data: ____/____/20____</div>
+                        <div>Assinatura Recebedor/Motorista<br><br>Data: ____/____/20____</div>
+                    </div>
                 </body></html>
                 """
-                components.html(html_print_view, height=500, scrolling=True)
+                components.html(html_print_view, height=600, scrolling=True)
 
             st.write("---")
 
@@ -193,7 +220,7 @@ def tela_logistica_outbound():
             df_lotes = df_itens[df_itens['exige_tag'] == False]
 
             guias = []
-            if not df_ativos.empty: guias.append("🔫 1. Ativos (Scanner/Manual)")
+            if not df_ativos.empty: guias.append("🔫 1. Ativos (Scanner/Lista)")
             if not df_lotes.empty: guias.append("📦 2. Consumo (Lotes)")
             guias.append("✅ 3. Revisão Final")
             
@@ -217,9 +244,9 @@ def tela_logistica_outbound():
                 return True
 
             # ---------------------------------------------------------
-            # MÓDULO SCANNER
+            # ETAPA 1: ATIVOS (SCANNER E A SOLUÇÃO INTELIGENTE DO USUÁRIO)
             # ---------------------------------------------------------
-            if aba_atual == "🔫 1. Ativos (Scanner/Manual)":
+            if aba_atual == "🔫 1. Ativos (Scanner/Lista)":
                 col_leitor, col_btn = st.columns([3, 1])
                 with col_leitor: st.subheader("📷 1. Leitura via Scanner QR Code")
                 with col_btn: 
@@ -228,8 +255,8 @@ def tela_logistica_outbound():
                         st.rerun()
 
                 with st.form("form_leitor_wms", clear_on_submit=True):
-                    tag_lida = st.text_input("Bipe o QR Code ou digite a TAG manualmente:", key="input_leitor", placeholder="Ex: TAG-1001 ou bipar etiqueta...")
-                    submit_leitor = st.form_submit_button("Registrar TAG", use_container_width=True, type="primary")
+                    tag_lida = st.text_input("Bipe a etiqueta com o Leitor Laser:", key="input_leitor", placeholder="Ex: Bipe o QR Code TraceBox aqui...")
+                    submit_leitor = st.form_submit_button("Registrar Leitura (Enter)", use_container_width=True, type="primary")
                     
                     if submit_leitor and tag_lida:
                         tag_crua = str(tag_lida).strip().upper()
@@ -267,8 +294,10 @@ def tela_logistica_outbound():
                                         st.success(f"✅ TAG {tag_limpa} capturada com sucesso!")
 
                 st.divider()
-                st.subheader("2. Seleção Manual (Contingência)")
+                st.subheader("2. Seleção Manual em Lista (Contingência)")
+                st.caption("O sistema listará todas as ferramentas e bloqueará caso tente selecionar a mesma TAG duas vezes.")
                 
+                # --- 🧠 A LÓGICA DO ENGENHEIRO (Validação no clique em vez de remoção da lista) ---
                 for _, row in df_ativos.iterrows():
                     cod = row['codigo']
                     qtd_p = int(row['qtd'])
@@ -282,23 +311,31 @@ def tela_logistica_outbound():
                     
                     faltam = qtd_p - lidas
                     if faltam > 0:
-                        tags_disp = obter_tags_disponiveis(cod, polo)
-                        opcoes_manuais = [t for t in tags_disp if t not in tags_separadas]
+                        # Mantemos todas as TAGs visíveis sempre, garantindo que o Streamlit não quebre
+                        todas_as_tags_disponiveis = obter_tags_disponiveis(cod, polo)
                         
-                        col_multi, col_btn_man = st.columns([3, 1])
-                        with col_multi:
-                            selecionados = st.multiselect(f"Faltam {faltam} un. Selecione na lista:", options=opcoes_manuais, key=f"manual_{cod}")
-                        with col_btn_man:
-                            st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-                            if st.button("Salvar Manual", key=f"btn_man_{cod}", type="secondary", use_container_width=True):
-                                if len(selecionados) > faltam: st.error(f"Selecione apenas {faltam} opções!")
-                                elif len(selecionados) == 0: st.warning("Selecione ao menos uma TAG.")
-                                else:
-                                    for t in selecionados: st.session_state['wms_tags_bipadas'][t] = {'codigo': cod, 'metodo': 'Manual'}
-                                    if checar_ativos_completos():
-                                        st.toast("🎉 Todos os ativos separados! Avançando...", icon="🚀")
-                                        st.session_state['wms_tab_idx'] += 1
-                                    st.rerun() 
+                        with st.container(border=True):
+                            col_sel, col_btn_man = st.columns([3, 1])
+                            with col_sel:
+                                selecionado = st.selectbox(
+                                    f"🔎 Faltam {faltam} un. Selecione a TAG:", 
+                                    [""] + todas_as_tags_disponiveis,
+                                    key=f"sel_manual_{cod}" # Chave estática, inquebrável
+                                )
+                            with col_btn_man:
+                                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                                if st.button("➕ Adicionar TAG", key=f"btn_add_{cod}", type="secondary", use_container_width=True):
+                                    if not selecionado: 
+                                        st.warning("Selecione uma TAG da lista para adicionar.")
+                                    elif selecionado in st.session_state['wms_tags_bipadas']:
+                                        # A VALIDAÇÃO DO USUÁRIO QUE SALVOU A UX:
+                                        st.error(f"🚨 Ops! A TAG {selecionado} já foi adicionada ao pacote. Escolha outra.")
+                                    else:
+                                        st.session_state['wms_tags_bipadas'][selecionado] = {'codigo': cod, 'metodo': 'Lista Manual'}
+                                        if checar_ativos_completos():
+                                            st.toast("🎉 Todos os ativos separados! Avançando...", icon="🚀")
+                                            st.session_state['wms_tab_idx'] += 1
+                                        st.rerun() 
                     else: st.info(f"🎉 100% das unidades de {cod} foram separadas!")
                     st.write("---")
 
@@ -310,7 +347,7 @@ def tela_logistica_outbound():
                     c1, c2 = st.columns([3, 1])
                     with c1: st.write(f"**{row['codigo']}** - {row['descricao']} (Pedido: {row['qtd']})")
                     with c2: 
-                        qtd_f = st.number_input("Qtd", min_value=0, max_value=int(row['qtd']), value=int(row['qtd']), key=f"lote_{row['codigo']}")
+                        qtd_f = st.number_input("Qtd a Expedir", min_value=0, max_value=int(row['qtd']), value=int(row['qtd']), key=f"lote_{row['codigo']}")
                         st.session_state['wms_lotes_separados'][row['codigo']] = qtd_f
                     st.divider()
                 
@@ -364,7 +401,7 @@ def tela_logistica_outbound():
                 st.rerun()
 
     # ==============================================================
-    # ABA RADAR DE TRANSFERÊNCIAS
+    # ABA RADAR E BAIXA MANTIDOS INTACTOS
     # ==============================================================
     with aba_transf:
         st.subheader("🚚 Itens em Trânsito")
@@ -372,13 +409,9 @@ def tela_logistica_outbound():
         if not df_transito.empty: st.dataframe(df_transito, use_container_width=True, hide_index=True)
         else: st.info("Nenhuma transferência ativa no momento.")
 
-    # ==============================================================
-    # ABA BAIXA EXCEPCIONAL
-    # ==============================================================
     with aba_baixa:
         st.subheader("🗑️ Módulo de Baixa Excepcional")
         st.write("Área restrita para ajuste de Furos de Inventário, Roubo/Extravio ou Consumo Interno.")
-        
         if not is_admin:
             st.error("🔒 **Acesso Negado:** Apenas Gestores e Administradores podem realizar Baixas Excepcionais.")
         else:
@@ -420,68 +453,3 @@ def tela_logistica_outbound():
                         
                         if "Ativo" in tipo_baixa:
                             df_filtrado['tag_str'] = df_filtrado['num_tag'].fillna("").astype(str).str.strip()
-                            tags_disponiveis = sorted(df_filtrado[df_filtrado['tag_str'] != ""]['tag_str'].tolist())
-                            
-                            if tags_disponiveis:
-                                c_tag, c_btn = st.columns([3, 1])
-                                with c_tag: tag_sel = st.selectbox("🏷️ 4. Selecione a TAG Específica:", [""] + tags_disponiveis, key=f"tag_baixa_{st.session_state['reset_baixa']}")
-                                with c_btn:
-                                    st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-                                    if st.button("➕ Adicionar à Lista", type="primary", use_container_width=True):
-                                        if tag_sel:
-                                            linha = df_filtrado[df_filtrado['tag_str'] == tag_sel].iloc[0]
-                                            key_carrinho = str(linha['id'])
-                                            if key_carrinho in st.session_state['carrinho_baixa']: st.warning("Esta TAG já está na lista de baixa.")
-                                            else:
-                                                st.session_state['carrinho_baixa'][key_carrinho] = {'id': linha['id'], 'codigo': linha['codigo_str'], 'descricao': linha['descricao_str'], 'tag': tag_sel, 'tipo': 'ATIVO', 'qtd_baixar': 1}
-                                                st.session_state['reset_baixa'] += 1
-                                                st.rerun()
-                                        else: st.error("Selecione uma TAG.")
-                            else: st.error("Erro: Nenhuma TAG encontrada para este Ativo.")
-                        else:
-                            df_lote = df_filtrado.groupby('codigo_str').agg({'quantidade': 'sum', 'id': 'first', 'descricao_str': 'first'}).reset_index()
-                            linha = df_lote.iloc[0]
-                            qtd_disp = int(linha['quantidade'])
-                            
-                            st.info(f"Saldo total disponível no sistema: **{qtd_disp}** unidades.")
-                            c_qtd, c_btn = st.columns([3, 1])
-                            with c_qtd: qtd_b = st.number_input("📉 4. Quantidade a dar baixa:", min_value=1, max_value=qtd_disp, value=1, key=f"qtd_baixa_{st.session_state['reset_baixa']}")
-                            with c_btn:
-                                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
-                                if st.button("➕ Adicionar à Lista", type="primary", use_container_width=True):
-                                    key_carrinho = str(linha['id'])
-                                    if key_carrinho in st.session_state['carrinho_baixa']: st.warning("Este lote já está na lista. Remova e adicione novamente se quiser alterar a quantidade.")
-                                    else:
-                                        st.session_state['carrinho_baixa'][key_carrinho] = {'id': linha['id'], 'codigo': linha['codigo_str'], 'descricao': linha['descricao_str'], 'tag': 'Lote/Consumo', 'tipo': 'LOTE', 'qtd_baixar': qtd_b}
-                                        st.session_state['reset_baixa'] += 1
-                                        st.rerun()
-
-            if st.session_state['carrinho_baixa']:
-                st.markdown("#### 📋 2. Itens Selecionados para Expurgar")
-                df_baixa = pd.DataFrame(st.session_state['carrinho_baixa'].values())
-                st.dataframe(df_baixa[['codigo', 'descricao', 'tag', 'qtd_baixar']], hide_index=True, use_container_width=True)
-                
-                if st.button("🗑️ Limpar Lista de Baixa"):
-                    st.session_state['carrinho_baixa'] = {}
-                    st.rerun()
-
-                st.write("---")
-                st.markdown("#### ⚖️ 3. Formalização da Baixa (Auditoria)")
-                with st.form("form_efetivar_baixa"):
-                    motivos = ["Ajuste de Estoque (Furo de Inventário)", "Roubo / Extravio", "Consumo Interno do Almoxarifado", "Doação / Venda de Ativos", "Sucata Excepcional"]
-                    motivo_sel = st.selectbox("Qual o motivo da baixa? *", motivos)
-                    doc_evidencia = st.text_input("Documento de Evidência (Nº B.O., Termo de Doação, ID Inventário) *")
-                    
-                    st.warning("⚠️ **ATENÇÃO:** Esta ação é irreversível. O estoque será reduzido.")
-                    if st.form_submit_button("🔥 Confirmar Baixa Definitiva", type="primary", use_container_width=True):
-                        if len(doc_evidencia.strip()) < 3: st.error("É obrigatório informar um Documento de Evidência válido.")
-                        else:
-                            from controllers.outbound import realizar_baixa_excepcional
-                            sucesso, msg = realizar_baixa_excepcional(list(st.session_state['carrinho_baixa'].values()), motivo_sel, doc_evidencia, usuario_atual, polo_baixa)
-                            if sucesso:
-                                st.session_state['carrinho_baixa'] = {}
-                                st.session_state['reset_baixa'] += 1
-                                st.success(msg)
-                                time.sleep(1.5)
-                                st.rerun()
-                            else: st.error(msg)

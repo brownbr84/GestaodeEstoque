@@ -1,83 +1,38 @@
 # tracebox/controllers/cadastro.py
-import os
-from database.queries import carregar_dados, executar_query
+from database.queries import executar_query, carregar_dados
 
-def obter_proximo_codigo():
-    """Busca o último ID no banco e gera o próximo código formatado (Ex: TRC-0015)"""
-    df = carregar_dados("SELECT id FROM imobilizado ORDER BY id DESC LIMIT 1")
-    if not df.empty:
-        ultimo_id = df.iloc[0]['id']
-        return f"TRC-{(ultimo_id + 1):04d}"
-    return "TRC-0001"
+def configurar_tabela_cadastro():
+    """Garante que a coluna tipo_controle existe na base, de forma silenciosa e segura."""
+    df_schema = carregar_dados("PRAGMA table_info(imobilizado)")
+    if not df_schema.empty:
+        colunas = df_schema['name'].str.lower().tolist()
+        if 'tipo_controle' not in colunas:
+            executar_query("ALTER TABLE imobilizado ADD COLUMN tipo_controle TEXT DEFAULT 'TAG'")
 
-def processar_commit_master_data(dados, arquivo_foto, usuario_atual):
-    """
-    Controlador que processa a criação de Master Data.
-    Lida com Upload de Arquivos, formatação (Upper Case) e explosão de Lotes (TAGs).
-    """
+def cadastrar_novo_produto(codigo, descricao, marca, modelo, categoria, dimensoes, capacidade, valor_unit, tipo_material, tipo_controle, imagem_b64, usuario):
+    configurar_tabela_cadastro()
     
-    # 1. Função interna de padronização (o seu to_upper)
-    def to_upper(texto):
-        return str(texto).strip().upper() if texto else ""
+    check = carregar_dados("SELECT id FROM imobilizado WHERE upper(codigo) = ?", (codigo.upper(),))
+    if not check.empty:
+        return False, "Este código já existe no cadastro de Master Data."
 
-    # Padroniza os dados textuais
-    desc = to_upper(dados['descricao'])
-    marc = to_upper(dados['marca'])
-    mod = to_upper(dados['modelo'])
-    cap = to_upper(dados['capacidade'])
-    dim = to_upper(dados['dimensoes'])
-    det = to_upper(dados['detalhes'])
-    doc = to_upper(dados['doc_entrada'])
-    u_man = to_upper(dados['ultima_manutencao'])
-    p_man = to_upper(dados['proxima_manutencao'])
-    
-    lista_tags = [to_upper(t) for t in dados['num_tags'].split(',')] if dados['num_tags'].strip() else []
-
-    # 2. Processamento da Imagem
-    caminho_arquivo = ""
-    if arquivo_foto:
-        # Garante que a pasta existe
-        os.makedirs("imagens_estoque", exist_ok=True)
-        caminho_arquivo = os.path.join("imagens_estoque", f"prod_{dados['codigo_final']}_{arquivo_foto.name}")
-        with open(caminho_arquivo, "wb") as f: 
-            f.write(arquivo_foto.getbuffer())
-
-    # 3. Query base (Adicionei o alerta_falta com 0 no final para não quebrar a arquitetura nova)
-    query_insert = """
+    query = """
         INSERT INTO imobilizado 
-        (codigo, descricao, marca, modelo, num_tag, quantidade, status, localizacao, 
-         categoria, valor_unitario, data_aquisicao, dimensoes, capacidade, 
-         ultima_manutencao, proxima_manutencao, detalhes, imagem, tipo_material, alerta_falta) 
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, 0)
+        (codigo, descricao, marca, modelo, categoria, dimensoes, capacidade, 
+         valor_unitario, tipo_material, tipo_controle, imagem, quantidade, localizacao, status, num_tag, data_aquisicao) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'Geral/Catálogo', 'Catálogo', '', date('now'))
     """
+    
+    id_novo = executar_query(query, (
+        codigo.upper(), descricao, marca, modelo, categoria, dimensoes, capacidade, 
+        valor_unit, tipo_material, tipo_controle.upper(), imagem_b64
+    ))
 
-    sucesso = False
-
-    # 4. Regra de Negócio: Rastreabilidade Individual (Várias TAGs) vs Lote Volumétrico
-    if "Rastreabilidade" in dados['tipo_controle']:
-        for tag in lista_tags:
-            if not tag: continue # Ignora vírgulas vazias
-            
-            n_id = executar_query(query_insert, (
-                dados['codigo_final'], desc, marc, mod, tag, 1, dados['status'], 
-                dados['localizacao'], dados['categoria'], dados['valor'], 
-                str(dados['data_aq']), dim, cap, u_man, p_man, det, caminho_arquivo, dados['tipo_material']
-            ))
-            if n_id:
-                executar_query("INSERT INTO movimentacoes (ferramenta_id, tipo, responsavel, destino_projeto, documento) VALUES (?, 'Entrada', ?, ?, ?)", 
-                              (n_id, usuario_atual, f"Implantação {dados['localizacao']}", doc))
-                sucesso = True
-
-    else:
-        # Lote Volumétrico
-        n_id = executar_query(query_insert, (
-            dados['codigo_final'], desc, marc, mod, "", dados['quantidade_lote'], 
-            dados['status'], dados['localizacao'], dados['categoria'], dados['valor'], 
-            str(dados['data_aq']), dim, cap, u_man, p_man, det, caminho_arquivo, dados['tipo_material']
-        ))
-        if n_id:
-            executar_query("INSERT INTO movimentacoes (ferramenta_id, tipo, responsavel, destino_projeto, documento) VALUES (?, 'Entrada', ?, ?, ?)", 
-                          (n_id, usuario_atual, f"Implantação Lote {dados['localizacao']}", doc))
-            sucesso = True
-
-    return sucesso
+    if id_novo:
+        executar_query(
+            "INSERT INTO movimentacoes (ferramenta_id, tipo, responsavel, destino_projeto, documento) VALUES (?, 'Criação Master Data', ?, 'Sistema', 'Setup Inicial')", 
+            (id_novo, usuario)
+        )
+        return True, "Master Data cadastrado com sucesso! Produto pronto para receber estoque via Inbound."
+    
+    return False, "Erro ao gravar no banco de dados."
