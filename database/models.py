@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, Date, Text, JSON, Boolean
+from sqlalchemy import Column, Integer, String, Float, DateTime, Date, Text, JSON
 from database.conexao_orm import Base
 from datetime import datetime
 from sqlalchemy import Float, ForeignKey
@@ -133,7 +133,7 @@ class Configuracoes(Base):
     smtp_porta = Column(Integer)
     emails_destinatarios = Column(JSON, default=[])
     # ── Módulo Fiscal ────────────────────────────────────────────
-    fiscal_habilitado = Column(Boolean, default=False)
+    fiscal_habilitado = Column(Integer, default=0)   # 0/1 — compatível com SQLite e PostgreSQL
     fiscal_ambiente = Column(String, default='homologacao')   # 'homologacao' | 'producao'
     fiscal_serie = Column(String, default='1')
     fiscal_numeracao_atual = Column(Integer, default=1)

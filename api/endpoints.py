@@ -158,7 +158,7 @@ def configuracoes_put(req: dict, current_user: dict = Depends(get_current_user),
     if "senha_smtp" in req and req.get("senha_smtp"):
         config.senha_smtp = criptografar(req.get("senha_smtp"))
     # Módulo Fiscal
-    if "fiscal_habilitado" in req: config.fiscal_habilitado = bool(req.get("fiscal_habilitado"))
+    if "fiscal_habilitado" in req: config.fiscal_habilitado = 1 if req.get("fiscal_habilitado") else 0
     if "fiscal_ambiente" in req: config.fiscal_ambiente = req.get("fiscal_ambiente")
     if "fiscal_serie" in req: config.fiscal_serie = req.get("fiscal_serie")
     if "fiscal_numeracao_atual" in req and req.get("fiscal_numeracao_atual") is not None:
