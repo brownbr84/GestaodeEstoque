@@ -3,12 +3,9 @@ import pandas as pd
 import streamlit as st
 import time
 import streamlit.components.v1 as components
-from controllers.outbound import (
-    setup_tabelas_outbound, carregar_fila_pedidos, cancelar_pedido, 
-    carregar_detalhes_picking, obter_tags_disponiveis, despachar_pedido_wms,
-    listar_itens_em_transito
-)
+from client.api_client import TraceBoxClient
 from database.queries import carregar_dados
+from controllers.outbound import setup_tabelas_outbound
 
 def gerar_csv(df):
     return df.to_csv(index=False, sep=';').encode('utf-8-sig')
@@ -41,7 +38,7 @@ def tela_logistica_outbound():
                 polo_origem = st.selectbox("📍 Polo Atual:", opcoes_polo, index=opcoes_polo.index(st.session_state['wms_polo']) if st.session_state['wms_polo'] in opcoes_polo else 0)
                 st.session_state['wms_polo'] = polo_origem
             
-            df_fila = carregar_fila_pedidos(polo_origem)
+            df_fila = pd.DataFrame(TraceBoxClient.get_fila_pedidos(polo_origem))
             
             if df_fila.empty: 
                 st.success(f"Nenhum pedido registado para {polo_origem}.")
@@ -120,7 +117,7 @@ def tela_logistica_outbound():
                                         motivo = st.text_input("Motivo:", key=f"mot_{true_id}")
                                         if st.button("Confirmar", key=f"cncl_{true_id}", use_container_width=True):
                                             if len(motivo) > 5:
-                                                s, m = cancelar_pedido(true_id, req_id, motivo, usuario_atual)
+                                                s, m = TraceBoxClient.cancelar_pedido(true_id, req_id, motivo, usuario_atual)
                                                 if s:
                                                     st.toast(m, icon="✅")
                                                     st.rerun() 
@@ -152,7 +149,7 @@ def tela_logistica_outbound():
             st.subheader(f"🛒 Separando REQ-{req_id:04d}")
             st.info(f"**Destino:** {destino} | **Solicitante:** {solicitante}")
             
-            df_itens = carregar_detalhes_picking(req_id, polo)
+            df_itens = pd.DataFrame(TraceBoxClient.get_detalhes_picking(req_id, polo))
 
             with st.expander("🖨️ Imprimir / Exportar Folha de Separação (Picking List)"):
                 df_print = df_itens[['codigo', 'descricao', 'qtd']].copy()
@@ -312,7 +309,7 @@ def tela_logistica_outbound():
                     faltam = qtd_p - lidas
                     if faltam > 0:
                         # Mantemos todas as TAGs visíveis sempre, garantindo que o Streamlit não quebre
-                        todas_as_tags_disponiveis = obter_tags_disponiveis(cod, polo)
+                        todas_as_tags_disponiveis = TraceBoxClient.obter_tags_disponiveis(cod, polo)
                         
                         with st.container(border=True):
                             col_sel, col_btn_man = st.columns([3, 1])
@@ -382,11 +379,23 @@ def tela_logistica_outbound():
                 
                 if not erros:
                     st.success("✅ Carga validada e pronta para emissão!")
-                    if st.button("🚀 Emitir Termo e Confirmar Saída", type="primary", use_container_width=True):
-                        sucesso_sep, doc, msg = despachar_pedido_wms(
-                            true_id, req_id, polo, destino, 
-                            dict_tags_final, dict_lotes_final, df_itens, usuario_atual
-                        )
+                    
+                    if 'processando_wms' not in st.session_state:
+                        st.session_state['processando_wms'] = False
+                        
+                    if st.button("🚀 Emitir Termo e Confirmar Saída", type="primary", use_container_width=True, disabled=st.session_state['processando_wms']):
+                        st.session_state['processando_wms'] = True
+                        with st.spinner("📦 Processando itens e deduzindo o estoque. Isso pode levar alguns segundos..."):
+                            lotes_json = {str(k): int(v) for k, v in dict_lotes_final.items()}
+                            itens_json = df_itens.to_dict(orient='records')
+                            
+                            sucesso_sep, doc, msg = TraceBoxClient.despachar_pedido_wms(
+                                int(true_id), int(req_id), polo, destino, 
+                                dict_tags_final, lotes_json, itens_json, usuario_atual
+                            )
+                        
+                        st.session_state['processando_wms'] = False
+                        
                         if sucesso_sep:
                             st.session_state['wms_doc_final'] = doc
                             st.session_state['wms_passo'] = 'concluido'
@@ -405,7 +414,7 @@ def tela_logistica_outbound():
     # ==============================================================
     with aba_transf:
         st.subheader("🚚 Itens em Trânsito")
-        df_transito = listar_itens_em_transito(st.session_state.get('wms_polo', 'Filial CTG'))
+        df_transito = pd.DataFrame(TraceBoxClient.listar_itens_em_transito(st.session_state.get('wms_polo', 'Filial CTG')))
         if not df_transito.empty: st.dataframe(df_transito, use_container_width=True, hide_index=True)
         else: st.info("Nenhuma transferência ativa no momento.")
 

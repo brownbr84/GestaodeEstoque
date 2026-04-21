@@ -2,7 +2,7 @@
 import streamlit as st
 import pandas as pd
 import streamlit.components.v1 as components
-from database.queries import carregar_dados
+from client.api_client import TraceBoxClient
 from controllers.etiquetas import formatar_etiqueta_html
 
 def tela_gerador_etiquetas():
@@ -18,8 +18,7 @@ def tela_gerador_etiquetas():
     # 2. FILTRO DE PRODUTO
     # ==========================================
     # Busca apenas os produtos que têm saldo físico em estoque para não poluir a lista
-    query_produtos = f"SELECT DISTINCT codigo, descricao FROM imobilizado WHERE tipo_material = '{tipo_selecionado}' AND quantidade > 0 ORDER BY descricao"
-    df_produtos = carregar_dados(query_produtos)
+    df_produtos = pd.DataFrame(TraceBoxClient.etiquetas_produtos(tipo_selecionado))
 
     if df_produtos.empty:
         st.warning(f"Nenhum produto do tipo '{tipo_selecionado}' encontrado no estoque no momento.")
@@ -35,7 +34,7 @@ def tela_gerador_etiquetas():
         codigo_puro = produto_selecionado.split(" - ")[0].strip()
 
         # Busca o inventário físico exato desse código
-        df_inventario = carregar_dados("SELECT id, num_tag, localizacao, quantidade, descricao FROM imobilizado WHERE codigo = ? AND quantidade > 0", (codigo_puro,))
+        df_inventario = pd.DataFrame(TraceBoxClient.etiquetas_inventario(codigo_puro))
 
         st.divider()
         st.write("### Seleção de Unidades/Lotes para Impressão")

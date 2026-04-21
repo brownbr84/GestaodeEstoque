@@ -4,8 +4,7 @@ import streamlit as st
 import time
 from datetime import datetime
 import streamlit.components.v1 as components
-from database.queries import carregar_dados
-from controllers.auditoria import processar_resultados_inventario, processar_cruzamento_wms
+from client.api_client import TraceBoxClient
 
 @st.cache_data
 def gerar_csv(df):
@@ -38,15 +37,7 @@ def tela_inventario_ciclico():
                 classificacao = st.selectbox("🏷️ Escopo da Contagem", ["Inventário Total (Todos)", "Apenas Ativos (Máquinas com TAG)", "Apenas Consumo (Lotes/Insumos)"])
 
             if st.button("🚀 Gerar Lista e Iniciar Inventário", type="primary", use_container_width=True):
-                query = "SELECT id, codigo, descricao, num_tag, quantidade, categoria FROM imobilizado WHERE localizacao = ? AND status IN ('Disponível', 'Manutenção')"
-                
-                # REGRA DE PROTEÇÃO: O filtro atua DIRETAMENTE no banco de dados.
-                if classificacao == "Apenas Ativos (Máquinas com TAG)":
-                    query += " AND num_tag IS NOT NULL AND trim(num_tag) != ''"
-                elif classificacao == "Apenas Consumo (Lotes/Insumos)":
-                    query += " AND (num_tag IS NULL OR trim(num_tag) = '')"
-                
-                df_esperado = carregar_dados(query, (polo,))
+                df_esperado = pd.DataFrame(TraceBoxClient.inventario_esperado(polo, classificacao))
                 
                 if df_esperado.empty:
                     st.warning("Nenhum item esperado para este filtro. O estoque consta como zerado.")
@@ -179,7 +170,7 @@ def tela_inventario_ciclico():
         # ABA FINAL
         with tabs[idx]:
             st.subheader("Resumo de Divergências")
-            resultados_finais, divergencias = processar_cruzamento_wms(
+            resultados_finais, divergencias = TraceBoxClient.processar_cruzamento_wms(
                 st.session_state['polo_alvo'], st.session_state['tags_bipadas'], st.session_state['lotes_contados']
             )
 
@@ -187,7 +178,7 @@ def tela_inventario_ciclico():
             else: st.success("✅ Inventário 100% exato.")
 
             if st.button("💾 Finalizar Inventário e Salvar Protocolo", type="primary", use_container_width=True):
-                erros = processar_resultados_inventario(resultados_finais, usuario_atual, st.session_state['polo_alvo'], st.session_state['inv_id'])
+                erros = TraceBoxClient.processar_resultados_inventario(resultados_finais, usuario_atual, st.session_state['polo_alvo'], st.session_state['inv_id'])
                 if erros:
                     for e in erros: st.error(e)
                 else:

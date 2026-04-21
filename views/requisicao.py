@@ -2,16 +2,12 @@
 import pandas as pd
 import streamlit as st
 import time
-from controllers.requisicao import (
-    setup_tabelas_requisicao, obter_catalogo_disponivel, 
-    salvar_nova_requisicao, listar_historico_solicitante, listar_itens_da_requisicao
-)
+from client.api_client import TraceBoxClient
 
 def tela_fazer_requisicao():
-    setup_tabelas_requisicao()
-
     st.title("🛒 Requisição de Materiais")
     st.caption("Solicite materiais ou acompanhe o status dos seus pedidos.")
+    
     usuario_atual = st.session_state['usuario_logado']['nome']
 
     # CRIA AS DUAS ABAS
@@ -53,7 +49,7 @@ def tela_fazer_requisicao():
             st.subheader("2. Catálogo Disponível")
             tipo_filtro = st.radio("Filtrar Categoria:", ["Ativo", "Consumo"], horizontal=True)
             
-            df_estoque = obter_catalogo_disponivel(polo_alvo, st.session_state['carrinho_req'], tipo_filtro)
+            df_estoque = pd.DataFrame(TraceBoxClient.obter_catalogo_disponivel_req(polo_alvo, st.session_state['carrinho_req'], tipo_filtro))
 
             if df_estoque.empty:
                 st.warning(f"Não há itens de '{tipo_filtro}' disponíveis ou estão todos reservados neste polo.")
@@ -88,7 +84,7 @@ def tela_fazer_requisicao():
                     
                 if c_btn2.button("✅ Enviar Requisição", type="primary", use_container_width=True):
                     if projeto:
-                        s, msg = salvar_nova_requisicao(polo_alvo, projeto, solicitante, df_carrinho.to_dict('records'))
+                        s, msg = TraceBoxClient.salvar_nova_requisicao(polo_alvo, projeto, solicitante, df_carrinho.to_dict('records'))
                         if s:
                             st.success(msg)
                             st.session_state['carrinho_req'] = []
@@ -103,7 +99,7 @@ def tela_fazer_requisicao():
     # =========================================================
     with aba_historico:
         st.subheader(f"📜 Histórico de Pedidos de {usuario_atual}")
-        df_hist = listar_historico_solicitante(usuario_atual)
+        df_hist = pd.DataFrame(TraceBoxClient.listar_historico_solicitante(usuario_atual))
         
         if df_hist.empty:
             st.info("Você ainda não fez nenhuma requisição no sistema.")
@@ -123,7 +119,7 @@ def tela_fazer_requisicao():
                         st.error(f"**Motivo do Cancelamento:** {req['motivo_cancelamento']}")
                         st.caption(f"Cancelado por: {req['cancelado_por']}")
                     
-                    df_itens = listar_itens_da_requisicao(req_id)
+                    df_itens = pd.DataFrame(TraceBoxClient.listar_itens_da_requisicao(req_id))
                     if not df_itens.empty:
                         st.dataframe(df_itens, hide_index=True, use_container_width=True)
                     else:

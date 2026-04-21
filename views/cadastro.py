@@ -1,13 +1,23 @@
 # tracebox/views/cadastro.py
 import streamlit as st
 import base64
-from controllers.cadastro import cadastrar_novo_produto
+from client.api_client import TraceBoxClient
 
 def tela_cadastro_produtos():
     st.markdown("<h2>➕ Cadastro de <span style='color: #2563eb;'>Master Data</span></h2>", unsafe_allow_html=True)
     st.caption("Crie o modelo base das ferramentas ou consumíveis. O saldo físico e as TAGs serão incluídos no módulo Inbound.")
 
     usuario_atual = st.session_state['usuario_logado']['nome']
+
+    config_atual = TraceBoxClient.get_config() or {}
+    lista_categorias = config_atual.get('categorias_produto', [])
+    if not lista_categorias: lista_categorias = ["Elétrica", "Mecânica", "Hidráulica", "EPI", "Insumos", "Outros"]
+    
+    lista_materiais = config_atual.get('tipos_material', [])
+    if not lista_materiais: lista_materiais = ["Ativo", "Consumo"]
+    
+    lista_controles = config_atual.get('tipos_controle', [])
+    if not lista_controles: lista_controles = ["TAG (Individual)", "Lote (Quantidade)"]
 
     with st.form("form_novo_produto", clear_on_submit=True):
         st.write("#### 📝 Informações Base do Produto")
@@ -18,15 +28,15 @@ def tela_cadastro_produtos():
         c3, c4, c5 = st.columns(3)
         with c3: marca = st.text_input("Marca", placeholder="Ex: Bosch")
         with c4: modelo = st.text_input("Modelo / Part Number", placeholder="Ex: GSB 16 RE")
-        with c5: categoria = st.selectbox("Categoria *", ["Elétrica", "Mecânica", "Hidráulica", "EPI", "Insumos", "Outros"])
+        with c5: categoria = st.selectbox("Categoria *", lista_categorias)
 
         st.write("---")
         st.write("#### 📐 Especificações Técnicas e Controle")
         c6, c7, c8, c9 = st.columns(4)
         with c6: dimensoes = st.text_input("Dimensões / Peso", placeholder="Ex: 2kg, 220V")
         with c7: capacidade = st.text_input("Capacidade / Vida Útil", placeholder="Ex: Mandril 1/2, 500h")
-        with c8: tipo_material = st.selectbox("Classe Contábil *", ["Ativo", "Consumo"])
-        with c9: tipo_controle = st.selectbox("Controle de Estoque *", ["TAG (Individual)", "Lote (Quantidade)"])
+        with c8: tipo_material = st.selectbox("Classe Contábil *", lista_materiais)
+        with c9: tipo_controle = st.selectbox("Controle de Estoque *", lista_controles)
         
         st.write("---")
         c10, c11 = st.columns([1, 2])
@@ -40,18 +50,29 @@ def tela_cadastro_produtos():
             if not codigo or not descricao:
                 st.error("⚠️ Os campos Código e Descrição são obrigatórios!")
             else:
-                # CORREÇÃO DA MEMÓRIA: Extração segura dos bytes usando getvalue()
                 imagem_b64 = ""
                 if imagem_file is not None:
                     bytes_da_imagem = imagem_file.getvalue()
                     if bytes_da_imagem:
                         imagem_b64 = base64.b64encode(bytes_da_imagem).decode('utf-8')
 
-                sucesso, msg = cadastrar_novo_produto(
-                    codigo.strip(), descricao.strip(), marca.strip(), modelo.strip(), 
-                    categoria, dimensoes.strip(), capacidade.strip(), valor, 
-                    tipo_material.split(" ")[0], tipo_controle.split(" ")[0], imagem_b64, usuario_atual
-                )
+                payload = {
+                    "codigo": codigo.strip(),
+                    "descricao": descricao.strip(),
+                    "marca": marca.strip(),
+                    "modelo": modelo.strip(),
+                    "categoria": categoria,
+                    "dimensoes": dimensoes.strip(),
+                    "capacidade": capacidade.strip(),
+                    "valor_unitario": valor,
+                    "tipo_material": tipo_material.split(" ")[0],
+                    "tipo_controle": tipo_controle.split(" ")[0],
+                    "imagem_b64": imagem_b64,
+                    "usuario_atual": usuario_atual
+                }
+                
+                sucesso, msg = TraceBoxClient.criar_produto(payload)
+                
                 if sucesso:
                     st.success(msg)
                 else:

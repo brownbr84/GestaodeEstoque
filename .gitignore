@@ -43,9 +43,18 @@ Thumbs.db
 # Arquivos de distribuição / backups
 *.zip
 *.tar.gz
-tracebox_completo.zip
 
-# Uploads / imagens temporárias
-logo.png
+# Imagens e documentos binários não versionados
 *.jpg
+*.jpeg
 *.png
+*.pdf
+
+# Pasta de arquivos mortos / scripts de migração descartados
+_arquivo_morto/
+
+# Memória interna do Claude Code (não é código do projeto)
+.claude/
+
+# Documentos de análise temporários
+tracebox_analise_arquitetural.md

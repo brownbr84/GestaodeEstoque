@@ -10,8 +10,8 @@ def obter_lista_produtos():
 def gerar_extrato_movimentacoes(codigo_produto, data_inicio, data_fim):
     codigo_puro = str(codigo_produto).split(" - ")[0].strip()
     query = """
-        SELECT m.data_movimentacao, m.tipo as 'Operação', i.num_tag as 'TAG', i.quantidade as 'Qtd_Transação',
-               m.destino_projeto as 'Origem/Destino', m.responsavel as 'Usuário', m.documento as 'Doc. Ref.'
+        SELECT m.data_movimentacao, m.tipo as "Operação", i.num_tag as "TAG", i.quantidade as "Qtd_Transação",
+               m.destino_projeto as "Origem/Destino", m.responsavel as "Usuário", m.documento as "Doc. Ref."
         FROM movimentacoes m JOIN imobilizado i ON m.ferramenta_id = i.id
         WHERE i.codigo = ? ORDER BY m.data_movimentacao ASC
     """
@@ -34,7 +34,7 @@ def gerar_extrato_movimentacoes(codigo_produto, data_inicio, data_fim):
         saldos.append(saldo_atual)
 
     df['Movimento'] = sinais; df['Saldo Global'] = saldos
-    df['data_movimentacao'] = pd.to_datetime(df['data_movimentacao'])
+    df['data_movimentacao'] = pd.to_datetime(df['data_movimentacao'], format='mixed', errors='coerce')
     mascara_data = (df['data_movimentacao'].dt.date >= data_inicio) & (df['data_movimentacao'].dt.date <= data_fim)
     df = df.loc[mascara_data].copy()
 
@@ -86,12 +86,12 @@ def gerar_relatorio_manutencao(data_inicio, data_fim, status_filtro):
     try:
         query = """
             SELECT 
-                mo.id as 'OS',
+                mo.id as "OS",
                 mo.data_entrada,
-                strftime('%d/%m/%Y', mo.data_entrada) as 'Abertura',
-                i.codigo as 'Código',
-                i.descricao as 'Ferramenta',
-                mo.status_ordem as 'Status',
+                to_char(mo.data_entrada, 'DD/MM/YYYY') as "Abertura",
+                i.codigo as "Código",
+                i.descricao as "Ferramenta",
+                mo.status_ordem as "Status",
                 COALESCE(mo.custo_reparo, 0) as custo_reparo,
                 COALESCE(i.valor_unitario, 0) as valor_novo
             FROM manutencao_ordens mo

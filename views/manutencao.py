@@ -2,25 +2,18 @@
 import streamlit as st
 import pandas as pd
 import time
-from database.queries import carregar_dados, executar_query
-from controllers.manutencao import *
+from client.api_client import TraceBoxClient
 from controllers.viabilidade import calcular_viabilidade
 
 def tela_gestao_manutencao():
-    # AUTO-SETUP E MIGRAÇÃO
-    executar_query("""
-        CREATE TABLE IF NOT EXISTS manutencao_ordens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, ferramenta_id INTEGER, codigo_ferramenta TEXT,
-            data_entrada DATETIME, data_saida DATETIME, motivo_falha TEXT, diagnostico TEXT,
-            custo_reparo REAL DEFAULT 0.0, mecanico_responsavel TEXT, status_ordem TEXT DEFAULT 'Aberta',
-            FOREIGN KEY(ferramenta_id) REFERENCES imobilizado(id)
-        )
-    """)
-    df_colunas = carregar_dados("PRAGMA table_info(manutencao_ordens)")
-    colunas_existentes = df_colunas['name'].tolist() if not df_colunas.empty else []
-    if 'solicitante' not in colunas_existentes: executar_query("ALTER TABLE manutencao_ordens ADD COLUMN solicitante TEXT")
-    if 'empresa_reparo' not in colunas_existentes: executar_query("ALTER TABLE manutencao_ordens ADD COLUMN empresa_reparo TEXT")
-    if 'num_orcamento' not in colunas_existentes: executar_query("ALTER TABLE manutencao_ordens ADD COLUMN num_orcamento TEXT")
+    import streamlit.components.v1 as components
+    if 'ticket_os_html' in st.session_state:
+        components.html(st.session_state['ticket_os_html'], height=850, scrolling=True)
+        if st.button("⬅️ Fechar Ticket e Voltar para Manutenção", type="primary", use_container_width=True):
+            del st.session_state['ticket_os_html']
+            st.session_state['reset_abertura'] += 1
+            st.rerun()
+        return
 
     # TRUQUE DE UX: Gatilho para forçar a limpeza total da tela de Abertura
     if 'reset_abertura' not in st.session_state:
@@ -42,15 +35,7 @@ def tela_gestao_manutencao():
         st.caption("Selecione primeiro o modelo consolidado, depois identifique a TAG ou a Filial do Lote.")
         
         # REGRA DE NEGÓCIO: Apenas Ativos (Ignora tudo que tiver 'Consumo' ou 'Consumível' na categoria)
-        query_disp = f"""
-            SELECT id, codigo, descricao, num_tag, localizacao, quantidade, categoria 
-            FROM imobilizado 
-            WHERE status != 'Manutenção' AND status != 'Sucateado' 
-            AND quantidade > 0 
-            AND categoria NOT LIKE '%Consumo%' AND categoria != 'Consumíveis'
-            /* {time.time()} */
-        """
-        df_disp = carregar_dados(query_disp)
+        df_disp = pd.DataFrame(TraceBoxClient.carregar_ativos_para_manutencao())
         
         if not df_disp.empty:
             df_disp['codigo_str'] = df_disp['codigo'].fillna("").astype(str).str.strip()
@@ -107,13 +92,123 @@ def tela_gestao_manutencao():
                             id_real = next(opt['id'] for opt in opcoes_especificas if opt['label'] == ativo_especifico)
                             cod_real = next(opt['codigo'] for opt in opcoes_especificas if opt['label'] == ativo_especifico)
                             
-                            sucesso, msg = abrir_ordem_manutencao(int(id_real), str(cod_real), str(motivo), str(solicitante), usuario_atual)
+                            sucesso, msg = TraceBoxClient.abrir_ordem_manutencao(int(id_real), str(cod_real), str(motivo), str(solicitante), usuario_atual)
                             if sucesso:
                                 st.success(msg)
-                                time.sleep(1.5)
-                                # Incrementa o gatilho: A tela limpa inteiramente ao recarregar!
-                                st.session_state['reset_abertura'] += 1
-                                st.rerun()
+                                import re
+                                match = re.search(r'OS-(\d+)', msg)
+                                if match:
+                                    os_id = match.group(1)
+                                    config_atual = TraceBoxClient.get_config() or {}
+                                    empresa = config_atual.get('nome_empresa', 'TraceBox')
+                                    logo = config_atual.get('logo_base64', '')
+                                    logo_html = f'<img src="data:image/png;base64,{logo}" style="max-height: 40px; float: right;">' if logo else ''
+                                    
+                                    from datetime import datetime
+                                    data_atual = datetime.now().strftime('%d/%m/%Y %H:%M')
+                                    
+                                    tag_val = 'S/N (Lote)'
+                                    polo_val = 'Indefinido'
+                                    if 'TAG:' in ativo_especifico:
+                                        parts = ativo_especifico.split('|')
+                                        tag_val = parts[0].split('TAG:')[1].strip()
+                                        polo_val = parts[1].split('Polo:')[1].strip()
+                                    elif 'Polo:' in ativo_especifico:
+                                        parts = ativo_especifico.split('|')
+                                        polo_val = parts[1].split('Polo:')[1].strip()
+                                        
+                                    html_ticket = f"""
+                                    <html><head><style>
+                                        body {{ font-family: 'Segoe UI', sans-serif; color: black !important; background-color: white !important; padding: 15px; font-size: 12px; }}
+                                        .cabecalho {{ border: 2px solid #0f172a; padding: 10px 15px; margin-bottom: 15px; border-radius: 5px; display: flex; justify-content: space-between; align-items: center; }}
+                                        .cabecalho-info {{ flex: 1; }}
+                                        .cabecalho-logo {{ text-align: right; margin-left: 20px; }}
+                                        .secao {{ border: 1px solid #cbd5e1; padding: 10px 15px; border-radius: 5px; margin-bottom: 15px; page-break-inside: avoid; }}
+                                        .titulo-secao {{ margin-top: 0; border-bottom: 2px solid #f1f5f9; padding-bottom: 5px; font-size: 14px; text-transform: uppercase; color: #0f172a; }}
+                                        .tabela-info {{ width: 100%; border-collapse: collapse; margin-top: 5px; }}
+                                        .tabela-info td {{ padding: 6px; border-bottom: 1px solid #eee; vertical-align: top; }}
+                                        .tabela-info td:first-child {{ font-weight: bold; width: 25%; background: #f8fafc; }}
+                                        .tabela-grid {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+                                        .tabela-grid th, .tabela-grid td {{ border: 1px solid #cbd5e1; padding: 6px; text-align: left; }}
+                                        .tabela-grid th {{ background-color: #f1f5f9; }}
+                                        .checklist {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 10px; }}
+                                        .check-item {{ display: flex; align-items: center; }}
+                                        .box {{ width: 14px; height: 14px; border: 1px solid #000; margin-right: 8px; display: inline-block; }}
+                                        .linha-assinatura {{ display: flex; justify-content: space-between; margin-top: 30px; text-align: center; page-break-inside: avoid; }}
+                                        .linha-assinatura div {{ width: 30%; border-top: 1px solid #000; padding-top: 5px; font-weight: bold; font-size: 11px; }}
+                                        @media print {{ #btn-imprimir {{ display: none; }} body {{ padding: 0; font-size: 11px; }} .secao {{ margin-bottom: 10px; padding: 8px 12px; }} }}
+                                    </style></head><body>
+                                        <button id="btn-imprimir" onclick="window.print()" style="padding: 10px 20px; margin-bottom: 15px; background: #2563eb; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); width: 100%;">🖨️ Imprimir Ordem de Serviço</button>
+                                        
+                                        <div class="cabecalho">
+                                            <div class="cabecalho-info">
+                                                <h2 style="margin: 0 0 5px 0; color: #0f172a; font-size: 18px;">ORDEM DE SERVIÇO #{os_id}</h2>
+                                                <p style="margin: 2px 0;"><strong>Abertura:</strong> {data_atual}</p>
+                                                <p style="margin: 2px 0;"><strong>Solicitante:</strong> {solicitante}</p>
+                                            </div>
+                                            <div class="cabecalho-logo">
+                                                {logo_html}
+                                                <h3 style="margin: 5px 0 0 0; color: #0f172a; font-size: 14px;">{empresa}</h3>
+                                            </div>
+                                        </div>
+                                        
+                                        <div class="secao">
+                                            <h3 class="titulo-secao">1. Identificação do Ativo</h3>
+                                            <table class="tabela-info">
+                                                <tr><td>Código / Descrição:</td><td>{produto_selecionado}</td></tr>
+                                                <tr><td>Número da TAG:</td><td>{tag_val}</td></tr>
+                                                <tr><td>Origem / Polo:</td><td>{polo_val}</td></tr>
+                                            </table>
+                                        </div>
+                                        
+                                        <div class="secao">
+                                            <h3 class="titulo-secao">2. Relato da Avaria (Pelo Solicitante)</h3>
+                                            <div style="padding: 8px; font-style: italic;">
+                                                {motivo}
+                                            </div>
+                                        </div>
+
+                                        <div class="secao">
+                                            <h3 class="titulo-secao">3. Acompanhamento e Fluxo de Execução</h3>
+                                            <div class="checklist">
+                                                <div class="check-item"><span class="box"></span> Recebimento Físico na Oficina &nbsp; ___/___/___</div>
+                                                <div class="check-item"><span class="box"></span> Diagnóstico Técnico &nbsp; ___/___/___</div>
+                                                <div class="check-item"><span class="box"></span> Aguardando Peças / Orçamento? ( ) Sim ( ) Não</div>
+                                                <div class="check-item"><span class="box"></span> Reparo em Execução &nbsp; ___/___/___</div>
+                                                <div class="check-item"><span class="box"></span> Teste de Qualidade / Calibração &nbsp; ___/___/___</div>
+                                                <div class="check-item"><span class="box"></span> Liberação para Estoque &nbsp; ___/___/___</div>
+                                            </div>
+                                        </div>
+
+                                        <div class="secao">
+                                            <h3 class="titulo-secao">4. Materiais e Peças Utilizadas</h3>
+                                            <table class="tabela-grid">
+                                                <tr><th style="width: 15%;">Qtd</th><th style="width: 25%;">Código</th><th>Descrição</th></tr>
+                                                <tr><td>&nbsp;</td><td></td><td></td></tr>
+                                                <tr><td>&nbsp;</td><td></td><td></td></tr>
+                                                <tr><td>&nbsp;</td><td></td><td></td></tr>
+                                            </table>
+                                        </div>
+
+                                        <div class="secao">
+                                            <h3 class="titulo-secao">5. Parecer Técnico (Resolução)</h3>
+                                            <div style="height: 60px; border-bottom: 1px dotted #ccc; margin-top: 15px;"></div>
+                                            <div style="height: 60px; border-bottom: 1px dotted #ccc; margin-top: 15px;"></div>
+                                        </div>
+                                        
+                                        <div class="linha-assinatura">
+                                            <div>Solicitante<br><span style="font-size: 10px; font-weight: normal;">{solicitante}</span></div>
+                                            <div>Técnico Responsável<br><span style="font-size: 10px; font-weight: normal;">Assinatura</span></div>
+                                            <div>Aprovação Gestor<br><span style="font-size: 10px; font-weight: normal;">Data: ___/___/___</span></div>
+                                        </div>
+                                    </body></html>
+                                    """
+                                    st.session_state['ticket_os_html'] = html_ticket
+                                    st.rerun()
+                                else:
+                                    time.sleep(1.5)
+                                    st.session_state['reset_abertura'] += 1
+                                    st.rerun()
                             else:
                                 st.error(msg)
         else:
@@ -122,8 +217,7 @@ def tela_gestao_manutencao():
     # === ABA 2: OFICINA (LANÇAR ORÇAMENTO EXTERNO/INTERNO) ===
     with aba2:
         st.subheader("Fila de Diagnóstico e Orçamento")
-        query_abertas = f"SELECT o.id, o.codigo_ferramenta, i.descricao, i.num_tag, o.motivo_falha, o.solicitante FROM manutencao_ordens o JOIN imobilizado i ON o.ferramenta_id = i.id WHERE o.status_ordem = 'Aberta' /* {time.time()} */"
-        df_abertas = carregar_dados(query_abertas)
+        df_abertas = pd.DataFrame(TraceBoxClient.carregar_ordens_abertas())
         
         if df_abertas.empty: st.success("✅ Nenhum item aguardando orçamento.")
         for _, row in df_abertas.iterrows():
@@ -140,7 +234,7 @@ def tela_gestao_manutencao():
                     if st.form_submit_button("Enviar para Aprovação (Gestão)", type="primary"):
                         if not diagnostico or not mecanico: st.error("Preencha o diagnóstico e o avaliador.")
                         else:
-                            lancar_orcamento_oficina(row['id'], diagnostico, custo, mecanico, empresa, num_orcamento)
+                            TraceBoxClient.lancar_orcamento_oficina(row['id'], diagnostico, custo, mecanico, empresa, num_orcamento, usuario_atual)
                             st.success("Enviado para viabilidade!")
                             time.sleep(1)
                             st.rerun()
@@ -148,8 +242,7 @@ def tela_gestao_manutencao():
     # === ABA 3: VIABILIDADE (COM GRID DE HISTÓRICO) ===
     with aba3:
         st.subheader("Aprovação Técnica e Financeira")
-        query_aprov = f"SELECT o.id, o.ferramenta_id, o.codigo_ferramenta, i.descricao, i.num_tag, i.valor_unitario, o.custo_reparo, o.diagnostico, o.empresa_reparo, o.num_orcamento FROM manutencao_ordens o JOIN imobilizado i ON o.ferramenta_id = i.id WHERE o.status_ordem = 'Aguardando Aprovação' /* {time.time()} */"
-        df_aprov = carregar_dados(query_aprov)
+        df_aprov = pd.DataFrame(TraceBoxClient.carregar_ordens_aprovacao())
         
         if df_aprov.empty: st.success("✅ Nenhuma pendência de aprovação.")
         for _, row in df_aprov.iterrows():
@@ -166,7 +259,7 @@ def tela_gestao_manutencao():
                 if viavel: st.success("💡 **Laudo do Sistema:** REPARO VIÁVEL (Abaixo de 50% de risco).")
                 else: st.error("🚨 **Laudo do Sistema:** INVIÁVEL. Sugestão de Sucateamento.")
                 
-                df_hist = carregar_dados(f"SELECT data_saida as Data, diagnostico as Serviço, empresa_reparo as Fornecedor, custo_reparo as 'Valor (R$)' FROM manutencao_ordens WHERE ferramenta_id = ? AND status_ordem = 'Concluída' ORDER BY data_saida DESC", (row['ferramenta_id'],))
+                df_hist = pd.DataFrame(TraceBoxClient.carregar_historico_concluidas(row['ferramenta_id']))
                 if not df_hist.empty:
                     st.caption(f"📚 **Histórico de Reparos Anteriores**")
                     st.dataframe(df_hist, use_container_width=True, hide_index=True)
@@ -174,17 +267,16 @@ def tela_gestao_manutencao():
 
                 col_btn1, col_btn2 = st.columns(2)
                 if col_btn1.button("✅ Aprovar Orçamento (Iniciar Reparo)", key=f"ap_{row['id']}", type="primary"):
-                    aprovar_manutencao(row['id'], "Aprovar")
+                    TraceBoxClient.aprovar_manutencao(row['id'], "Aprovar",usuario_atual)
                     st.rerun()
                 if col_btn2.button("🗑️ Reprovar e Sucatear Ativo", key=f"re_{row['id']}"):
-                    aprovar_manutencao(row['id'], "Reprovar")
+                    TraceBoxClient.aprovar_manutencao(row['id'], "Reprovar",usuario_atual)
                     st.rerun()
 
     # === ABA 4: FINALIZAÇÃO E ESTOQUE ===
     with aba4:
         st.subheader("Liberação Pós-Reparo")
-        query_exec = f"SELECT o.id, o.ferramenta_id, o.codigo_ferramenta, i.descricao, i.num_tag FROM manutencao_ordens o JOIN imobilizado i ON o.ferramenta_id = i.id WHERE o.status_ordem = 'Em Execução' /* {time.time()} */"
-        df_exec = carregar_dados(query_exec)
+        df_exec = pd.DataFrame(TraceBoxClient.carregar_ordens_execucao())
         
         if df_exec.empty: st.success("✅ Nenhum conserto em execução no momento.")
         for _, row in df_exec.iterrows():
@@ -193,7 +285,7 @@ def tela_gestao_manutencao():
                 st.warning("⚠️ Este ativo está aprovado e na posse da oficina/fornecedor.")
                 destino = st.selectbox("Após conclusão, dar entrada em qual Polo?", ["Filial CTG", "Filial ITJ", "Filial REC", "Filial SÃO"], key=f"f_{row['id']}")
                 if st.button("✅ Confirmar Recebimento e Disponibilizar", key=f"btn_f_{row['id']}", type="primary"):
-                    finalizar_reparo_oficina(row['id'], row['ferramenta_id'], destino, usuario_atual)
+                    TraceBoxClient.finalizar_reparo_oficina(row['id'], row['ferramenta_id'], destino, usuario_atual)
                     st.success("Estoque atualizado!")
                     time.sleep(1)
                     st.rerun()

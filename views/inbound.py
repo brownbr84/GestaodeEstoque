@@ -3,14 +3,9 @@ import streamlit as st
 import time
 import pandas as pd
 import streamlit.components.v1 as components
-from database.queries import carregar_dados
-from controllers.inbound import (
-    configurar_tabela_inbound, processar_entrada_compra, obter_origens_esperadas, 
-    carregar_itens_esperados, processar_recebimento_doca, processar_reintegracao_falta, processar_baixa_extravio
-)
+from client.api_client import TraceBoxClient
 
 def tela_logistica_inbound():
-    configurar_tabela_inbound()
     
     st.title("📥 Logística Inbound (Recebimento)")
     st.caption("Doca de Descarga WMS Híbrida e Malha Fina de Pendências.")
@@ -21,7 +16,7 @@ def tela_logistica_inbound():
 
     if 'inb_polo' not in st.session_state: st.session_state['inb_polo'] = "Filial CTG"
 
-    tab_compras, tab_doca, tab_malha = st.tabs(["🧾 Compras (NF)", "🚛 Doca de Descarga WMS", "🚨 Malha Fina (Faltas)"])
+    tab_compras, tab_doca, tab_malha, tab_excep = st.tabs(["🧾 Compras (NF)", "🚛 Doca de Descarga WMS", "🚨 Malha Fina (Faltas)", "⚠️ Entradas Excepcionais"])
 
     # ==============================================================
     # ABA 1: ENTRADA DE COMPRAS E IMPRESSÃO DE ETIQUETAS
@@ -157,7 +152,7 @@ def tela_logistica_inbound():
                     polo_destino = st.selectbox("Polo Recebedor da Carga:", opcoes_polo, index=idx_polo)
 
             # Injetar o Tipo_Material direto na string para não ter de ir à base de dados a cada clique!
-            df_catalogo = carregar_dados("SELECT DISTINCT codigo, descricao, tipo_material FROM imobilizado")
+            df_catalogo = pd.DataFrame(TraceBoxClient.get_catalogo_simples())
             lista_catalogo = df_catalogo.apply(lambda r: f"{r['codigo']} - {r['descricao']} [{r['tipo_material']}]", axis=1).tolist() if not df_catalogo.empty else []
             
             col_form, col_cart = st.columns([1.2, 1])
@@ -227,7 +222,7 @@ def tela_logistica_inbound():
                                 
                                 with st.spinner("A guardar os ativos e a gerar o rastreio (TAGs)..."):
                                     for item in st.session_state['carrinho_compras']:
-                                        sucesso, msg, tags_novas = processar_entrada_compra(
+                                        sucesso, msg, tags_novas = TraceBoxClient.processar_entrada_compra(
                                             item['codigo'], polo_destino, nf_input, 
                                             item['valor'], item['qtd'], usuario_atual
                                         )
@@ -264,14 +259,14 @@ def tela_logistica_inbound():
                 st.session_state['inb_polo'] = polo_atual
             
             with c_origem:
-                origens_disp = obter_origens_esperadas(polo_atual)
+                origens_disp = TraceBoxClient.obter_origens_esperadas(polo_atual)
                 if not origens_disp: st.info("Nenhuma carga em trânsito ou retorno esperado."); origem_sel = None
                 else: origem_sel = st.selectbox("🚚 Carga vinda de:", [""] + origens_disp)
 
             if origem_sel:
                 st.divider()
                 st.subheader(f"📋 Manifesto de Carga: {origem_sel}")
-                df_esperados = carregar_itens_esperados(origem_sel, polo_atual)
+                df_esperados = pd.DataFrame(TraceBoxClient.carregar_itens_esperados(origem_sel, polo_atual))
                 if df_esperados.empty: st.warning("Carga vazia no banco de dados.")
                 else:
                     st.dataframe(df_esperados[['codigo', 'descricao', 'num_tag', 'quantidade', 'tipo_material']], hide_index=True, use_container_width=True)
@@ -446,7 +441,7 @@ def tela_logistica_inbound():
                 else: st.success("✅ Carga 100% batida! Nenhum item em falta.")
 
                 if st.button("📥 Confirmar Entrada no Estoque", type="primary", use_container_width=True):
-                    sucesso, msg, alerta = processar_recebimento_doca(origem, polo, st.session_state['inb_tags_bipadas'], st.session_state['inb_lotes'], df_esperados, usuario_atual)
+                    sucesso, msg, alerta = TraceBoxClient.processar_recebimento_doca(origem, polo, st.session_state['inb_tags_bipadas'], {str(k): int(v['disponivel']+v['manutencao']+v['sucata']) for k,v in st.session_state['inb_lotes'].items()}, df_esperados.to_dict(orient='records'), usuario_atual)
                     if sucesso:
                         st.session_state['inb_passo'] = 'selecao'
                         if alerta: st.warning(msg)
@@ -463,7 +458,7 @@ def tela_logistica_inbound():
         
         if not is_admin: st.error("🔒 Acesso restrito a Gestores.")
         else:
-            df_faltas = carregar_dados("SELECT id, codigo, descricao, num_tag, quantidade, localizacao, tipo_material FROM imobilizado WHERE alerta_falta = 1 AND quantidade > 0")
+            df_faltas = pd.DataFrame(TraceBoxClient.get_malha_fina_faltas())
             if df_faltas.empty: st.success("✅ O seu estoque está limpo! Nenhuma pendência em aberto.")
             else:
                 st.dataframe(df_faltas[['localizacao', 'codigo', 'descricao', 'num_tag', 'quantidade']], hide_index=True, use_container_width=True)
@@ -486,7 +481,7 @@ def tela_logistica_inbound():
                             with c2: destino_retorno = st.selectbox("Dar entrada em qual Polo?", ["Filial CTG", "Filial ITJ", "Filial REC", "Filial SÃO", "Manutenção"])
                             
                             if st.form_submit_button("✅ Reintegrar ao Estoque", type="primary"):
-                                processar_reintegracao_falta(id_db, qtd_enc, qtd_pendente, destino_retorno, usuario_atual)
+                                TraceBoxClient.processar_reintegracao_falta(id_db, qtd_enc, qtd_pendente, destino_retorno, usuario_atual)
                                 st.success("Material reintegrado com sucesso!"); time.sleep(1); st.rerun()
                         else:
                             c1, c2 = st.columns([1, 2])
@@ -496,5 +491,211 @@ def tela_logistica_inbound():
                             if st.form_submit_button("🔥 Confirmar Baixa por Extravio", type="primary"):
                                 if len(motivo) < 5: st.error("Descreva a justificativa para a auditoria.")
                                 else:
-                                    processar_baixa_extravio(id_db, qtd_perda, qtd_pendente, dados_origem['localizacao'], motivo, usuario_atual)
+                                    TraceBoxClient.processar_baixa_extravio(id_db, qtd_perda, qtd_pendente, dados_origem['localizacao'], motivo, usuario_atual)
                                     st.success("Extravio formalizado no sistema."); time.sleep(1); st.rerun()
+
+    # ==============================================================
+    # ABA 4: ENTRADAS EXCEPCIONAIS (Admin/Gestor apenas)
+    # ==============================================================
+    with tab_excep:
+        st.subheader("⚠️ Entradas Excepcionais")
+        st.caption("Operações de entrada fora do fluxo padrão. Todas ficam registradas na auditoria.")
+
+        if not is_admin:
+            st.error("🔒 Acesso restrito a Administradores e Gestores.")
+        else:
+            sub_reativar, sub_entrada = st.tabs(["🔄 Reativar TAG Extraviada", "📦 Entrada Excepcional de Produto"])
+
+            # ----------------------------------------------------------
+            # SUB-ABA 1: REATIVAR TAG EXTRAVIADA
+            # ----------------------------------------------------------
+            with sub_reativar:
+                st.write("### 🔄 Ressurreição de Ativo")
+                st.caption("Use se um equipamento dado como perdido for encontrado fisicamente na operação.")
+                with st.form("form_reativacao", clear_on_submit=True):
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        tag_achada = st.text_input("Bipe a TAG encontrada *", placeholder="Ex: TAG-9999")
+                    with c2:
+                        polo_reativar = st.selectbox("Dar entrada em qual Polo?", ["Filial CTG", "Filial ITJ", "Filial REC", "Filial SÃO", "Manutenção"])
+                    motivo_achado = st.text_input("Justificativa / Como foi encontrado? *", placeholder="Ex: Estava escondido atrás da prateleira B...")
+                    if st.form_submit_button("🟢 Reativar TAG no Sistema", type="primary"):
+                        if not tag_achada or len(motivo_achado) < 5:
+                            st.error("Preencha a TAG e descreva detalhadamente como foi encontrada para a auditoria.")
+                        else:
+                            sucesso, msg_reativacao = TraceBoxClient.reativar_tag_extraviada(tag_achada, polo_reativar, motivo_achado, usuario_atual)
+                            if sucesso:
+                                st.success(msg_reativacao)
+                            else:
+                                st.error(msg_reativacao)
+
+            # ----------------------------------------------------------
+            # SUB-ABA 2: ENTRADA EXCEPCIONAL DE PRODUTO
+            # ----------------------------------------------------------
+            with sub_entrada:
+                # Inicializa estados da sub-aba
+                if 'excep_sucesso' not in st.session_state:
+                    st.session_state['excep_sucesso'] = False
+                    st.session_state['excep_tags'] = []
+                if 'carrinho_excep' not in st.session_state:
+                    st.session_state['carrinho_excep'] = []
+                if 'excep_mostrar_pdf' not in st.session_state:
+                    st.session_state['excep_mostrar_pdf'] = False
+
+                # ── TELA DE SUCESSO COM IMPRESSÃO ──────────────────────
+                if st.session_state['excep_sucesso']:
+                    st.balloons()
+                    st.success("✅ **Entrada Excepcional processada com sucesso no estoque!**")
+                    st.markdown("### 🖨️ Central de Impressão de Etiquetas")
+                    st.caption("Selecione os ativos recém-cadastrados para imprimir os QR Codes antes de guardar.")
+
+                    tags_para_print = st.session_state['excep_tags']
+                    ativos_com_tag = [t for t in tags_para_print if t['tipo'] == 'Ativo']
+
+                    if ativos_com_tag:
+                        df_print_e = pd.DataFrame(ativos_com_tag)
+                        df_print_e.insert(0, "Imprimir", True)
+                        df_editado_e = st.data_editor(
+                            df_print_e, hide_index=True, use_container_width=True,
+                            column_config={
+                                "Imprimir": st.column_config.CheckboxColumn("🖨️ Selecionar", default=True),
+                                "codigo": st.column_config.TextColumn("Cód.", disabled=True),
+                                "descricao": st.column_config.TextColumn("Descrição", disabled=True),
+                                "tag": st.column_config.TextColumn("TAG", disabled=True),
+                                "tipo": st.column_config.TextColumn("Tipo", disabled=True),
+                            }
+                        )
+                        c_print_e, c_nova_e = st.columns(2)
+                        with c_print_e:
+                            if st.button("🖨️ Gerar Etiquetas Selecionadas", type="primary", use_container_width=True):
+                                selecionados_e = df_editado_e[df_editado_e["Imprimir"] == True]
+                                if selecionados_e.empty:
+                                    st.warning("Selecione pelo menos um item.")
+                                else:
+                                    st.session_state['excep_mostrar_pdf'] = True
+                                    st.session_state['excep_df_sel'] = selecionados_e
+                                    st.rerun()
+                        with c_nova_e:
+                            if st.button("🔄 Nova Entrada Excepcional", use_container_width=True):
+                                st.session_state['excep_sucesso'] = False
+                                st.session_state['excep_tags'] = []
+                                st.session_state['excep_mostrar_pdf'] = False
+                                st.rerun()
+
+                        if st.session_state['excep_mostrar_pdf']:
+                            st.divider()
+                            df_sel_e = st.session_state['excep_df_sel']
+                            html_etiq = """<html><head><style>
+                                body{font-family:'Segoe UI',sans-serif;background:#f8fafc;padding:20px;}
+                                .etiqueta{background:white;border:2px dashed #94a3b8;width:340px;height:160px;padding:15px;margin:10px;display:inline-block;border-radius:8px;box-shadow:0 1px 3px rgba(0,0,0,.1);page-break-inside:avoid;}
+                                .qr{float:left;width:110px;height:110px;margin-right:15px;}
+                                .info{float:left;width:200px;}.title{font-size:14px;font-weight:bold;color:#2563eb;margin:0 0 5px 0;text-transform:uppercase;}
+                                .tag{font-size:22px;font-weight:900;color:#0f172a;margin:0 0 5px 0;}
+                                .desc{font-size:11px;color:#475569;margin:0;line-height:1.3;}
+                                .footer{font-size:9px;color:#94a3b8;margin-top:10px;border-top:1px solid #e2e8f0;padding-top:5px;}
+                                @media print{body{background:white;padding:0;}button{display:none;}.etiqueta{border:1px solid #000;box-shadow:none;margin:5px;}}
+                            </style></head><body>
+                            <button onclick="window.print()" style="padding:10px 20px;background:#2563eb;color:white;border:none;border-radius:5px;cursor:pointer;font-weight:bold;font-size:16px;margin-bottom:20px;">🖨️ Imprimir Todas</button><br>"""
+                            for _, row in df_sel_e.iterrows():
+                                qr_data = f"COD:{row['codigo']}|TAG:{row['tag']}"
+                                qr_url = f"https://api.qrserver.com/v1/create-qr-code/?size=150x150&data={qr_data}"
+                                html_etiq += f"""<div class="etiqueta">
+                                    <img class="qr" src="{qr_url}" alt="QR">
+                                    <div class="info">
+                                        <p class="title">TraceBox WMS</p>
+                                        <p class="tag">{row['tag']}</p>
+                                        <p class="desc"><b>CÓD: {row['codigo']}</b><br>{str(row['descricao'])[:45]}...</p>
+                                        <p class="footer">ATIVO • Entrada Excepcional</p>
+                                    </div></div>"""
+                            html_etiq += "</body></html>"
+                            components.html(html_etiq, height=500, scrolling=True)
+                    else:
+                        lotes_info = [t for t in tags_para_print if t['tipo'] == 'Consumo']
+                        if lotes_info:
+                            st.info(f"Saldo de {len(lotes_info)} lote(s) de consumo atualizado no estoque. Nenhuma etiqueta de TAG para imprimir.")
+                        if st.button("🔄 Nova Entrada Excepcional", use_container_width=True):
+                            st.session_state['excep_sucesso'] = False
+                            st.session_state['excep_tags'] = []
+                            st.rerun()
+
+                # ── FORMULÁRIO DE ENTRADA ──────────────────────────────
+                else:
+                    st.write("### 📦 Entrada Excepcional de Produto")
+                    st.caption("Registre entradas sem NF (ajuste, doação, retorno não rastreado, etc.). Ativos ganham TAG automática.")
+
+                    df_catalogo_excep = pd.DataFrame(TraceBoxClient.get_catalogo_simples())
+                    lista_catalogo_excep = df_catalogo_excep.apply(
+                        lambda r: f"{r['codigo']} - {r['descricao']} [{r['tipo_material']}]", axis=1
+                    ).tolist() if not df_catalogo_excep.empty else []
+
+                    opcoes_polo_excep = ["Filial CTG", "Filial ITJ", "Filial REC", "Filial SÃO", "Manutenção"]
+
+                    col_form_excep, col_cart_excep = st.columns([1.2, 1])
+
+                    with col_form_excep:
+                        with st.form("form_add_item_excep", clear_on_submit=True):
+                            st.write("**Adicionar item ao lote**")
+                            produto_excep = st.selectbox("Produto (Master Data):", [""] + lista_catalogo_excep)
+                            c_qtd_e, c_val_e = st.columns(2)
+                            with c_qtd_e:
+                                qtd_excep = st.number_input("Quantidade", min_value=1, value=1)
+                            with c_val_e:
+                                val_excep = st.number_input("Valor Unit. (R$)", min_value=0.0, format="%.2f")
+                            st.info("🤖 **Automação:** Ativos ganham TAGs sequenciais exclusivas. Lotes atualizam o saldo do estoque.")
+                            if st.form_submit_button("➕ Adicionar ao Lote", use_container_width=True):
+                                if not produto_excep:
+                                    st.error("Selecione um produto.")
+                                else:
+                                    cod_e = produto_excep.split(" - ")[0]
+                                    desc_e = produto_excep.split(" - ")[1].split(" [")[0]
+                                    st.session_state['carrinho_excep'].append({
+                                        'codigo': cod_e, 'descricao': desc_e, 'qtd': qtd_excep, 'valor': val_excep
+                                    })
+                                    st.rerun()
+
+                    with col_cart_excep:
+                        st.write("**🛒 Itens no lote**")
+                        if not st.session_state['carrinho_excep']:
+                            st.info("Nenhum item adicionado.")
+                        else:
+                            df_cart_excep = pd.DataFrame(st.session_state['carrinho_excep'])
+                            st.dataframe(
+                                df_cart_excep[['codigo', 'descricao', 'qtd']].rename(
+                                    columns={'codigo': 'Cód.', 'descricao': 'Produto', 'qtd': 'Qtd'}),
+                                hide_index=True, use_container_width=True)
+                            if st.button("🗑️ Esvaziar", key="btn_esvaziar_excep"):
+                                st.session_state['carrinho_excep'] = []
+                                st.rerun()
+
+                    if st.session_state['carrinho_excep']:
+                        st.divider()
+                        with st.form("form_confirmar_excep"):
+                            st.write("**Dados do lançamento**")
+                            c_polo_e, c_doc_e = st.columns(2)
+                            with c_polo_e:
+                                polo_excep = st.selectbox("Polo de destino:", opcoes_polo_excep)
+                            with c_doc_e:
+                                doc_excep = st.text_input("Documento de referência *", placeholder="Ex: Memo-001, Auto Lavratura...")
+                            motivo_excep = st.text_area("Justificativa (obrigatória para auditoria) *",
+                                                        placeholder="Descreva o motivo da entrada excepcional...", height=80)
+                            if st.form_submit_button("✅ Confirmar Entrada Excepcional", type="primary", use_container_width=True):
+                                if len(doc_excep.strip()) < 3 or len(motivo_excep.strip()) < 10:
+                                    st.error("Preencha o documento e a justificativa (mínimo 10 caracteres).")
+                                else:
+                                    carrinho_payload = [
+                                        {'codigo': i['codigo'], 'qtd': i['qtd'], 'valor': i['valor']}
+                                        for i in st.session_state['carrinho_excep']
+                                    ]
+                                    with st.spinner("Processando entrada e gerando TAGs..."):
+                                        ok_e, msg_e, tags_e = TraceBoxClient.realizar_entrada_excepcional(
+                                            carrinho_payload, motivo_excep.strip(), doc_excep.strip(),
+                                            usuario_atual, polo_excep, perfil_atual
+                                        )
+                                    if ok_e:
+                                        st.session_state['excep_sucesso'] = True
+                                        st.session_state['excep_tags'] = tags_e
+                                        st.session_state['excep_mostrar_pdf'] = False
+                                        st.session_state['carrinho_excep'] = []
+                                        st.rerun()
+                                    else:
+                                        st.error(msg_e)

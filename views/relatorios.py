@@ -1,11 +1,10 @@
 # tracebox/views/relatorios.py
 import streamlit as st
 import datetime
+import pandas as pd
 import streamlit.components.v1 as components
-from controllers.relatorios import (
-    obter_lista_produtos, gerar_extrato_movimentacoes, 
-    gerar_posicao_consolidada, gerar_relatorio_manutencao, construir_html_impressao
-)
+from client.api_client import TraceBoxClient
+from controllers.relatorios import construir_html_impressao
 
 def tela_central_relatorios():
     st.title("🖨️ Central de Relatórios e Auditoria")
@@ -23,7 +22,7 @@ def tela_central_relatorios():
     # =========================================================
     with aba_extrato:
         st.write("### Rastreabilidade Total de um Produto")
-        lista_prod = obter_lista_produtos()
+        lista_prod = TraceBoxClient.relatorios_produtos()
         
         c_prod, c_ini, c_fim = st.columns([2, 1, 1])
         with c_prod: produto_sel = st.selectbox("Selecione o Produto:", [""] + lista_prod)
@@ -35,7 +34,8 @@ def tela_central_relatorios():
             elif data_inicio_ex > data_fim_ex: st.error("A Data Inicial não pode ser maior que a Data Final.")
             else:
                 with st.spinner("Compilando histórico..."):
-                    df_extrato, cod_puro = gerar_extrato_movimentacoes(produto_sel, data_inicio_ex, data_fim_ex)
+                    df_extrato_raw, cod_puro = TraceBoxClient.relatorios_extrato(produto_sel, data_inicio_ex.strftime("%Y-%m-%d"), data_fim_ex.strftime("%Y-%m-%d"))
+                    df_extrato = pd.DataFrame(df_extrato_raw)
                     titulo = "Extrato de Movimentações Logísticas (Kardex)"
                     filtros = f"Produto: {cod_puro} | Período: {data_inicio_ex.strftime('%d/%m/%Y')} a {data_fim_ex.strftime('%d/%m/%Y')}"
                     html_pronto = construir_html_impressao(titulo, usuario_atual, filtros, df_extrato)
@@ -49,7 +49,7 @@ def tela_central_relatorios():
         st.write("### Auditoria de Saldos Físicos")
         if st.button("Gerar Relatório de Posição Consolidada", type="primary"):
             with st.spinner("Calculando saldos e valores..."):
-                df_consolidado = gerar_posicao_consolidada()
+                df_consolidado = pd.DataFrame(TraceBoxClient.relatorios_posicao())
                 titulo = "Posição Consolidada de Estoque Geral"
                 filtros = "Filtro Aplicado: Todos os Polos Ativos | Ignorando Sucata e Extravio"
                 html_pronto = construir_html_impressao(titulo, usuario_atual, filtros, df_consolidado)
@@ -76,7 +76,7 @@ def tela_central_relatorios():
                 st.error("A Data Inicial não pode ser maior que a Data Final.")
             else:
                 with st.spinner("Avaliando custos e viabilidades..."):
-                    df_manut = gerar_relatorio_manutencao(data_inicio_man, data_fim_man, status_os)
+                    df_manut = pd.DataFrame(TraceBoxClient.relatorios_manutencao(data_inicio_man.strftime("%Y-%m-%d"), data_fim_man.strftime("%Y-%m-%d"), status_os))
                     
                     titulo = "Relatório de Desempenho da Oficina (Ordens de Serviço)"
                     filtros = f"Status: {status_os} | Período de Abertura: {data_inicio_man.strftime('%d/%m/%Y')} a {data_fim_man.strftime('%d/%m/%Y')}"

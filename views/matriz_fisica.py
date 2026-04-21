@@ -1,7 +1,7 @@
 # tracebox/views/matriz_fisica.py
 import streamlit as st
 import pandas as pd
-from database.queries import carregar_dados
+from client.api_client import TraceBoxClient
 
 def tela_matriz_fisica():
     COLUNAS_FIXAS = ["CTG", "ITJ", "REC", "SAO", "Manutenção", "Transferência", "Operação"]
@@ -33,8 +33,8 @@ def tela_matriz_fisica():
             except:
                 pass 
         
-        df_check = carregar_dados("SELECT codigo FROM imobilizado WHERE codigo = ? LIMIT 1", (codigo_alvo,))
-        if not df_check.empty:
+        encontrado = TraceBoxClient.matriz_fisica_checar(codigo_alvo)
+        if encontrado:
             st.success(f"✅ **{codigo_alvo}** localizado! Abrindo ficha...")
             st.session_state['produto_selecionado'] = codigo_alvo
             import time
@@ -47,7 +47,7 @@ def tela_matriz_fisica():
     # 2. MOTOR DA MATRIZ (AGORA COM MASTER DATA)
     # ==========================================
     # ⚠️ CORREÇÃO: Removemos o bloqueio de 'Catálogo' para mostrar itens recém-criados com saldo Zero!
-    df_raw = carregar_dados("SELECT codigo, descricao, status, localizacao, quantidade FROM imobilizado")
+    df_raw = pd.DataFrame(TraceBoxClient.matriz_fisica_raw())
     
     if df_raw.empty:
         st.info("Nenhum produto cadastrado no sistema. Vá ao 'Cadastro de Master Data' primeiro.")

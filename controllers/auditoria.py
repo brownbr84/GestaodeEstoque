@@ -1,7 +1,8 @@
 # Validações de inventário e acuracidade
 # tracebox/controllers/auditoria.py
-from datetime import datetime
-from database.queries import executar_query, carregar_dados  # <-- Adicionado carregar_dados
+from database.queries import carregar_dados
+from database.conexao_orm import SessionLocal
+from services.inventario_service import InventarioService
 
 def processar_cruzamento_wms(polo, tags_bipadas, lotes_contados):
     """
@@ -55,46 +56,16 @@ def processar_cruzamento_wms(polo, tags_bipadas, lotes_contados):
     return resultados_finais, divergencias
 
 
-# MANTENHA A FUNÇÃO processar_cruzamento_wms INTACTA NO TOPO DO ARQUIVO!
-
 def processar_resultados_inventario(resultados, usuario_atual, polo, inventario_id):
     """
-    Recebe os resultados, aplica regras de negócio e carimba com o ID de Rastreabilidade.
+    Recebe os resultados do cruzamento, e aciona o Service para gravar o inventário de forma transacional.
     """
-    erros = []
-    agora = datetime.now().strftime('%d/%m/%Y %H:%M')
-    
-    # 1. Validação de Regra de Negócio
-    for res in resultados:
-        if res['qtd_fisica'] != res['qtd_sistema'] and len(res['justificativa']) < 4:
-            erros.append(f"Atenção: Justificativa obrigatória para divergência no item {res['ids_originais']}")
-            
-    if erros: return erros
+    with SessionLocal() as session:
+        sucesso, erros = InventarioService.processar_resultados_inventario(
+            session, resultados, usuario_atual, polo, inventario_id
+        )
+        return erros # Retorna a lista de erros (vazia se deu tudo certo) para a View mostrar os alertas
 
-    # 2. Processamento
-    for res in resultados:
-        qtd_fisica = res['qtd_fisica']
-        qtd_sistema = res['qtd_sistema']
-        
-        # A. Lotes
-        if res['is_lote'] and qtd_fisica != qtd_sistema:
-            total_contado = qtd_fisica
-            for i, id_origem in enumerate(res['ids_originais']):
-                nova_qtd = total_contado if i == 0 else 0
-                status_n = 'Disponível' if nova_qtd > 0 else 'Extraviado'
-                executar_query("UPDATE imobilizado SET quantidade = ?, status = ? WHERE id = ?", (nova_qtd, status_n, id_origem))
-        
-        # B. Unitários
-        elif not res['is_lote'] and qtd_fisica != qtd_sistema:
-            status_t = 'Disponível' if qtd_fisica == 1 else 'Extraviado'
-            executar_query("UPDATE imobilizado SET quantidade = ?, status = ? WHERE id = ?", (qtd_fisica, status_t, res['ids_originais'][0]))
-
-        # 3. Log de Auditoria RASTREÁVEL
-        tipo_log = "Auditoria Cíclica OK" if qtd_fisica == qtd_sistema else "Ajuste de Inventário"
-        for id_log in (res['ids_originais'] if isinstance(res['ids_originais'], list) else [res['ids_originais']]):
-            # AQUI ESTÁ A MÁGICA: O protocolo do inventário é injetado no log!
-            msg = f"[{inventario_id}] Físico: {qtd_fisica}. Just: {res['justificativa']}"
-            executar_query("INSERT INTO movimentacoes (ferramenta_id, tipo, responsavel, destino_projeto, documento) VALUES (?,?,?,?,?)", 
-                          (id_log, tipo_log, usuario_atual, polo, msg))
-            
-    return erros
+def reativar_tag_extraviada(tag, polo, motivo, usuario):
+    with SessionLocal() as session:
+        return InventarioService.reativar_tag_extraviada(session, tag, polo, motivo, usuario)

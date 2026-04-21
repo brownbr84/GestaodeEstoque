@@ -1,0 +1,73 @@
+
+
+services:
+  # ──────────────────────────────────────────────
+  # Banco de Dados PostgreSQL
+  # ──────────────────────────────────────────────
+  db:
+    image: postgres:15-alpine
+    container_name: tracebox_db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: tracebox_password
+      POSTGRES_DB: tracebox_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ──────────────────────────────────────────────
+  # Backend (FastAPI)
+  # ──────────────────────────────────────────────
+  api:
+    build: .
+    container_name: tracebox_api
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_TYPE=postgres
+      - PG_HOST=db
+      - PG_DATABASE=tracebox_db
+      - PG_USER=postgres
+      - PG_PASSWORD=tracebox_password
+      - PG_PORT=5432
+      # Chaves de segurança lidas do .env do host (não commitar no repo)
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - FERNET_KEY=${FERNET_KEY}
+    depends_on:
+      db:
+        condition: service_healthy
+    # Cria tabelas via ORM (mais seguro que alembic upgrade head sem migrations completas)
+    # e sobe a API em seguida
+    entrypoint: >
+      sh -c "python -c 'from database.conexao_orm import Base, engine; Base.metadata.create_all(bind=engine); print(\"Schema OK\")' &&
+             python criar_admin.py &&
+             uvicorn api.endpoints:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  # ──────────────────────────────────────────────
+  # Frontend (Streamlit)
+  # ──────────────────────────────────────────────
+  frontend:
+    build: .
+    container_name: tracebox_frontend
+    restart: always
+    command: streamlit run main.py --server.port=8502 --server.address=0.0.0.0
+    ports:
+      - "8502:8502"
+    environment:
+      - API_URL=http://api:8000/api/v1
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - FERNET_KEY=${FERNET_KEY}
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
+

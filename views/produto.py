@@ -4,8 +4,7 @@ import pandas as pd
 import base64
 import streamlit.components.v1 as components
 from controllers.etiquetas import formatar_etiqueta_html
-from database.queries import carregar_dados
-from controllers.produto import atualizar_ficha_tecnica, deletar_produto_master
+from client.api_client import TraceBoxClient
 
 def tela_produto():
     codigo_master = st.session_state.get('produto_selecionado')
@@ -18,19 +17,23 @@ def tela_produto():
     perfil_atual = usuario_atual.get('perfil', 'Operador').upper()
     is_admin_ou_gestor = "ADM" in perfil_atual or "GESTOR" in perfil_atual
     
-    CATEGORIAS_OFICIAIS = ["Elétrica", "Mecânica", "Hidráulica", "EPI", "Insumos", "Outros", "Ferramentas Elétricas", "Ferramentas Manuais", "Máquinas Pesadas", "Consumíveis"]
+    config_atual = TraceBoxClient.get_config() or {}
+    CATEGORIAS_OFICIAIS = config_atual.get('categorias_produto', [])
+    if not CATEGORIAS_OFICIAIS:
+        CATEGORIAS_OFICIAIS = ["Elétrica", "Mecânica", "Hidráulica", "EPI", "Insumos", "Outros", "Ferramentas Elétricas", "Ferramentas Manuais", "Máquinas Pesadas", "Consumíveis"]
     
-    # 🧠 BUSCA RESTRITA: Puxa o "Molde" garantindo que busca a linha que tem a imagem (O Catálogo)
-    df_mestre = carregar_dados("SELECT descricao, marca, modelo, categoria, valor_unitario, dimensoes, capacidade, ultima_manutencao, proxima_manutencao, detalhes, imagem, tipo_material, tipo_controle FROM imobilizado WHERE codigo = ? AND status = 'Catálogo' LIMIT 1", (codigo_master,))
-    if df_mestre.empty:
-        # Fallback de segurança se o catálogo foi apagado, pega a primeira unidade
-        df_mestre = carregar_dados("SELECT descricao, marca, modelo, categoria, valor_unitario, dimensoes, capacidade, ultima_manutencao, proxima_manutencao, detalhes, imagem, tipo_material, tipo_controle FROM imobilizado WHERE codigo = ? LIMIT 1", (codigo_master,))
-        if df_mestre.empty:
-            st.session_state['produto_selecionado'] = None
-            st.rerun()
+    dados_produto = TraceBoxClient.get_produto_detalhes(codigo_master)
+    
+    if not dados_produto:
+        st.error("Produto não encontrado ou API offline.")
+        st.session_state['produto_selecionado'] = None
+        if st.button("Voltar"): st.rerun()
+        return
         
-    dados_mestre = df_mestre.iloc[0]
-    inventario_fisico = carregar_dados("SELECT id, num_tag, localizacao, status, quantidade FROM imobilizado WHERE codigo = ? AND status != 'Catálogo' AND quantidade > 0", (codigo_master,))
+    dados_mestre = dados_produto['mestre']
+    inventario_fisico = pd.DataFrame(dados_produto['inventario'])
+    df_tags = pd.DataFrame(dados_produto['tags'])
+    hist = pd.DataFrame(dados_produto['historico'])
     
     st.write("<br>", unsafe_allow_html=True)
     col_topo1, col_topo2 = st.columns([5, 1])
@@ -113,7 +116,6 @@ def tela_produto():
             c_img, c_f1, c_f2 = st.columns([1, 2, 2])
             
             with c_img:
-                # Exibição protegida da imagem atual
                 if dados_mestre.get('imagem') and dados_mestre['imagem'].strip() != "":
                     st.image(f"data:image/png;base64,{dados_mestre['imagem']}", use_container_width=True)
                 else:
@@ -136,8 +138,8 @@ def tela_produto():
                 if tipo_ctrl == "TAG":
                     st.text_input("Última Manutenção Base", value="Variável (Ver aba Gestão de Calibração)", disabled=True)
                     st.text_input("Próxima Manutenção Base", value="Variável (Ver aba Gestão de Calibração)", disabled=True)
-                    nova_ult_man = dados_mestre['ultima_manutencao']
-                    nova_prox_man = dados_mestre['proxima_manutencao']
+                    nova_ult_man = dados_mestre.get('ultima_manutencao', '') or ''
+                    nova_prox_man = dados_mestre.get('proxima_manutencao', '') or ''
                 else:
                     nova_ult_man = st.text_input("Última Inspeção do Lote (AAAA-MM-DD)", value=str(dados_mestre.get('ultima_manutencao', '') or "")[:10], disabled=not modo_edicao)
                     nova_prox_man = st.text_input("Próxima Inspeção do Lote (AAAA-MM-DD)", value=str(dados_mestre.get('proxima_manutencao', '') or "")[:10], disabled=not modo_edicao)
@@ -146,7 +148,6 @@ def tela_produto():
             
             if is_admin_ou_gestor:
                 if st.form_submit_button("💾 Atualizar Master Data", type="primary", disabled=not modo_edicao):
-                    # Se não enviou foto nova, mantém a velha. Se enviou, extrai com segurança!
                     imagem_final = dados_mestre.get('imagem', '')
                     if nova_imagem_file is not None:
                         bytes_da_foto = nova_imagem_file.getvalue()
@@ -159,9 +160,12 @@ def tela_produto():
                         'ultima_manutencao': nova_ult_man, 'proxima_manutencao': nova_prox_man, 'detalhes': novos_detalhes,
                         'imagem': imagem_final
                     }
-                    atualizar_ficha_tecnica(codigo_master, dados_up)
-                    st.success("Ficha Técnica atualizada com sucesso!")
-                    import time; time.sleep(1); st.rerun()
+                    sucesso = TraceBoxClient.update_produto_mestre(codigo_master, dados_up)
+                    if sucesso:
+                        st.success("Ficha Técnica atualizada com sucesso!")
+                        import time; time.sleep(1); st.rerun()
+                    else:
+                        st.error("Erro ao atualizar Ficha Técnica.")
             else:
                 st.form_submit_button("💾 Atualizar Master Data", type="primary", disabled=True)
 
@@ -174,8 +178,6 @@ def tela_produto():
                 st.error("🔒 **Acesso Restrito:** Apenas Gestores e Administradores podem alterar os calendários de calibração das TAGs.")
             
             st.write("Edite as datas nos campos com ✏️ na tabela abaixo e clique em Salvar.")
-            df_tags = carregar_dados("SELECT id as ID_DB, num_tag as 'TAG', localizacao as 'Localização', status as 'Status', ultima_manutencao as 'Última Inspeção', proxima_manutencao as 'Deadline Calibração' FROM imobilizado WHERE codigo = ? AND tipo_controle = 'TAG' AND num_tag != '' AND status != 'Catálogo'", (codigo_master,))
-            
             if df_tags.empty:
                 st.info("Não há patrimónios físicos rastreáveis (TAGs) registados para este produto no momento.")
             else:
@@ -197,31 +199,26 @@ def tela_produto():
                     
                     if is_admin_ou_gestor:
                         if st.form_submit_button("💾 Salvar Calendários de Calibração", type="primary"):
-                            from controllers.produto import atualizar_calibracao_tags
-                            sucesso, msg = atualizar_calibracao_tags(df_editado, usuario_atual['nome'])
+                            itens_calibracao = []
+                            for _, row in df_editado.iterrows():
+                                itens_calibracao.append({
+                                    "ID_DB": int(row['ID_DB']),
+                                    "ultima_inspecao": str(row['Última Inspeção'])[:10] if pd.notna(row['Última Inspeção']) else "",
+                                    "deadline_calibracao": str(row['Deadline Calibração'])[:10] if pd.notna(row['Deadline Calibração']) else ""
+                                })
+                            
+                            sucesso, msg = TraceBoxClient.update_produto_calibracao(codigo_master, itens_calibracao, usuario_atual['nome'])
                             if sucesso:
                                 st.success(msg)
                                 import time; time.sleep(1); st.rerun()
+                            else:
+                                st.error(msg)
                     else:
                         st.form_submit_button("💾 Salvar Calendários de Calibração", type="primary", disabled=True)
 
     with aba4:
         st.write("### 📜 Histórico de Vida do Produto")
-        ids_produto = tuple(inventario_fisico['id'].tolist()) if not inventario_fisico.empty else ()
-        if ids_produto:
-            placeholders = ','.join('?' for _ in ids_produto)
-            query_hist = f"""
-                SELECT m.data_movimentacao as Data, i.num_tag as Serial, m.tipo as Operação, 
-                       m.documento as 'Doc/NF', m.responsavel as Agente, m.destino_projeto as Destino 
-                FROM movimentacoes m 
-                JOIN imobilizado i ON m.ferramenta_id = i.id 
-                WHERE m.ferramenta_id IN ({placeholders}) 
-                ORDER BY m.data_movimentacao DESC LIMIT 200
-            """
-            hist = carregar_dados(query_hist, ids_produto)
-            if not hist.empty: 
-                st.dataframe(hist, use_container_width=True, hide_index=True)
-            else: 
-                st.info("Nenhum histórico de movimentação encontrado.")
-        else:
-            st.info("Produto ainda não possui movimentações físicas.")
+        if not hist.empty: 
+            st.dataframe(hist, use_container_width=True, hide_index=True)
+        else: 
+            st.info("Nenhum histórico de movimentação encontrado.")
