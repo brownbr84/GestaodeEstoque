@@ -1,9 +1,9 @@
 # services/manutencao_service.py
 from sqlalchemy.orm import Session
-from sqlalchemy import desc
 from datetime import datetime
 from database.models import Imobilizado, Movimentacao, ManutencaoOrdem
 from services.governance_service import GovernanceService
+from services.email_service import EmailService
 
 class ManutencaoService:
 
@@ -61,52 +61,26 @@ class ManutencaoService:
             detalhes_log = f"Abertura de OS-{nova_os.id} para avaria do ativo {codigo} ({id_para_oficina})"
             GovernanceService.registar_log(session, usuario, 'manutencao_ordens', nova_os.id, 'ABERTURA_OS', detalhes_log)
 
+            # 5. E-MAIL AUTOMÁTICO — via EmailService (não bloqueia criação da OS)
+            assunto, corpo = EmailService.template_abertura_os(
+                nova_os.id, item.codigo, item.descricao, solicitante, motivo
+            )
+            ok_email, erro_email = EmailService.enviar(session, assunto, corpo)
+
+            nova_os.email_status = 'ENVIADO' if ok_email else 'FALHOU'
+            if ok_email:
+                nova_os.email_enviado_em = datetime.now()
+            else:
+                nova_os.email_erro = erro_email
+                GovernanceService.registar_log(
+                    session, usuario, 'manutencao_ordens', nova_os.id,
+                    'EMAIL_OS_FALHOU', f"Falha ao enviar e-mail da OS-{nova_os.id}: {erro_email}"
+                )
+
             session.commit()
-            
-            # 5. E-MAIL AUTOMÁTICO
-            try:
-                from database.models import Configuracoes
-                import smtplib
-                from email.mime.text import MIMEText
-                from email.mime.multipart import MIMEMultipart
-                import threading
-                
-                config = session.query(Configuracoes).first()
-                if config and config.email_smtp and config.senha_smtp and config.emails_destinatarios:
-                    def disparar_email(smtp_user, smtp_pass, dests, os_id, cod, desc, sol, mot):
-                        try:
-                            msg = MIMEMultipart()
-                            msg['From'] = smtp_user
-                            msg['To'] = ", ".join(dests)
-                            msg['Subject'] = f"🚨 TraceBox: Nova OS Abertura - {cod}"
-                            
-                            corpo = f"""
-                            <h2>Nova Ordem de Serviço (OS-{os_id})</h2>
-                            <p><strong>Produto:</strong> {cod} - {desc}</p>
-                            <p><strong>Solicitante:</strong> {sol}</p>
-                            <p><strong>Motivo/Relato:</strong> {mot}</p>
-                            <hr>
-                            <p><em>Este é um e-mail automático do sistema TraceBox.</em></p>
-                            """
-                            msg.attach(MIMEText(corpo, 'html'))
-                            
-                            # Supondo Gmail SMTP
-                            server = smtplib.SMTP('smtp.gmail.com', 587)
-                            server.starttls()
-                            server.login(smtp_user, smtp_pass)
-                            server.send_message(msg)
-                            server.quit()
-                        except Exception as e:
-                            print(f"Erro ao enviar email OS-{os_id}: {e}")
-                    
-                    threading.Thread(target=disparar_email, args=(
-                        config.email_smtp, config.senha_smtp, config.emails_destinatarios,
-                        nova_os.id, item.codigo, item.descricao, solicitante, motivo
-                    )).start()
-            except Exception as e:
-                print(f"Erro ao inicializar thread de email: {e}")
-            
-            return True, f"OS-{nova_os.id} aberta com sucesso! Estoque atualizado."
+
+            msg_email = "" if ok_email else f" ⚠️ E-mail não enviado: {erro_email}"
+            return True, f"OS-{nova_os.id} aberta com sucesso! Estoque atualizado.{msg_email}"
         except Exception as e:
             session.rollback()
             return False, f"Erro ao abrir OS: {str(e)}"

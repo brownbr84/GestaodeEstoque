@@ -56,6 +56,20 @@ def _migrar_colunas_incrementais():
             conn.commit()
             print("      [OK] Coluna 'smtp_porta' adicionada à tabela configuracoes.")
 
+        cols_os = [c["name"] for c in inspector.get_columns("manutencao_ordens")]
+        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", "DATETIME"), ("email_erro", "TEXT")]:
+            if col not in cols_os:
+                conn.execute(_sa.text(f"ALTER TABLE manutencao_ordens ADD COLUMN {col} {tipo}"))
+                conn.commit()
+                print(f"      [OK] Coluna '{col}' adicionada à tabela manutencao_ordens.")
+
+        cols_req = [c["name"] for c in inspector.get_columns("requisicoes")]
+        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", "DATETIME"), ("email_erro", "TEXT")]:
+            if col not in cols_req:
+                conn.execute(_sa.text(f"ALTER TABLE requisicoes ADD COLUMN {col} {tipo}"))
+                conn.commit()
+                print(f"      [OK] Coluna '{col}' adicionada à tabela requisicoes.")
+
 
 def main():
     print("=" * 55)

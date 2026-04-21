@@ -594,6 +594,28 @@ class TraceBoxClient:
             return False, str(e)
 
     @staticmethod
+    def reenviar_email_os(os_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/manutencao/{os_id}/reenviar-email",
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "E-mail reenviado.")
+            return False, res.json().get("detail", "Erro ao reenviar.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def reenviar_email_requisicao(req_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/requisicao/{req_id}/reenviar-email",
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "E-mail reenviado.")
+            return False, res.json().get("detail", "Erro ao reenviar.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
     def realizar_entrada_excepcional(carrinho: list, motivo: str, documento: str, usuario: str, polo: str, perfil_usuario: str) -> tuple:
         try:
             res = requests.post(f"{API_BASE_URL}/inbound/entrada-excepcional",

@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from datetime import datetime
 from database.models import Requisicao, RequisicaoItem
 from services.governance_service import GovernanceService
+from services.email_service import EmailService
 
 class RequisicaoService:
     @staticmethod
@@ -44,8 +45,30 @@ class RequisicaoService:
             GovernanceService.registar_log(session, solicitante, 'requisicoes', nova_req.id, 'NOVA_REQUISICAO', detalhes_log)
 
             session.commit()
-            return True, f"Requisição REQ-{nova_req.id:04d} gerada com sucesso!"
-            
+
+            # 4. E-MAIL AUTOMÁTICO — não bloqueia a criação da requisição
+            itens_para_email = [
+                {"codigo_produto": i.codigo_produto, "descricao_produto": i.descricao_produto, "quantidade_solicitada": i.quantidade_solicitada}
+                for i in nova_req.itens
+            ]
+            assunto, corpo = EmailService.template_nova_requisicao(nova_req.id, solicitante, destino, itens_para_email)
+            ok_email, erro_email = EmailService.enviar(session, assunto, corpo)
+
+            nova_req.email_status = 'ENVIADO' if ok_email else 'FALHOU'
+            if ok_email:
+                nova_req.email_enviado_em = datetime.now()
+            else:
+                nova_req.email_erro = erro_email
+                GovernanceService.registar_log(
+                    session, solicitante, 'requisicoes', nova_req.id,
+                    'EMAIL_REQ_FALHOU', f"Falha ao enviar e-mail da REQ-{nova_req.id}: {erro_email}"
+                )
+
+            session.commit()
+
+            msg_email = "" if ok_email else f" ⚠️ E-mail não enviado: {erro_email}"
+            return True, f"Requisição REQ-{nova_req.id:04d} gerada com sucesso!{msg_email}"
+
         except Exception as e:
             session.rollback()
             return False, f"Erro interno ao salvar requisição: {str(e)}"

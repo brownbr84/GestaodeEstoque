@@ -94,7 +94,19 @@ def tela_gestao_manutencao():
                             
                             sucesso, msg = TraceBoxClient.abrir_ordem_manutencao(int(id_real), str(cod_real), str(motivo), str(solicitante), usuario_atual)
                             if sucesso:
-                                st.success(msg)
+                                msg_os = msg.split(" ⚠️")[0]
+                                st.success(msg_os)
+                                if "⚠️ E-mail não enviado" in msg:
+                                    erro_email = msg.split("⚠️ E-mail não enviado: ")[-1]
+                                    st.warning(f"⚠️ E-mail não enviado: {erro_email}")
+                                    import re as _re
+                                    match_id = _re.search(r'OS-(\d+)', msg_os)
+                                    if match_id and st.session_state['usuario_logado'].get('perfil') in ['Admin', 'Gestor']:
+                                        if st.button("📧 Reenviar E-mail da OS", key=f"reenvio_os_{match_id.group(1)}"):
+                                            ok_r, msg_r = TraceBoxClient.reenviar_email_os(int(match_id.group(1)))
+                                            st.success(msg_r) if ok_r else st.error(msg_r)
+                                else:
+                                    st.caption("📧 E-mail de notificação enviado aos responsáveis.")
                                 import re
                                 match = re.search(r'OS-(\d+)', msg)
                                 if match:

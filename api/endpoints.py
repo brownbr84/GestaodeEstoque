@@ -588,6 +588,71 @@ def inbound_malha_fina_extravio(req: BaixaExtravioRequest, current_user: dict = 
     processar_baixa_extravio(req.id_db, req.qtd_perda, req.qtd_pendente, req.origem, req.motivo, req.usuario)
     return {"status": True}
 
+# ==========================================
+# REENVIO DE E-MAILS
+# ==========================================
+
+@app.post("/api/v1/manutencao/{os_id}/reenviar-email")
+def manutencao_reenviar_email(os_id: int, current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Reenvia o e-mail de abertura de uma OS. Somente Admin ou Gestor."""
+    if current_user.get("perfil") not in ["Admin", "Gestor"]:
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from database.models import ManutencaoOrdem, Imobilizado
+    from services.email_service import EmailService
+    from datetime import datetime as _dt
+
+    os_obj = db.query(ManutencaoOrdem).filter(ManutencaoOrdem.id == os_id).first()
+    if not os_obj:
+        raise HTTPException(status_code=404, detail=f"OS-{os_id} não encontrada.")
+
+    item = db.query(Imobilizado).filter(Imobilizado.id == os_obj.ferramenta_id).first()
+    descricao = item.descricao if item else ""
+
+    assunto, corpo = EmailService.template_abertura_os(
+        os_obj.id, os_obj.codigo_ferramenta, descricao, os_obj.solicitante, os_obj.motivo_falha
+    )
+    ok, erro = EmailService.enviar(db, assunto, corpo)
+
+    os_obj.email_status = 'ENVIADO' if ok else 'FALHOU'
+    os_obj.email_enviado_em = _dt.now() if ok else os_obj.email_enviado_em
+    os_obj.email_erro = None if ok else erro
+    db.commit()
+
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Falha ao reenviar e-mail: {erro}")
+    return {"status": "sucesso", "mensagem": f"E-mail da OS-{os_id} reenviado com sucesso."}
+
+
+@app.post("/api/v1/requisicao/{req_id}/reenviar-email")
+def requisicao_reenviar_email(req_id: int, current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Reenvia o e-mail de notificação de uma requisição. Somente Admin ou Gestor."""
+    if current_user.get("perfil") not in ["Admin", "Gestor"]:
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from database.models import Requisicao
+    from services.email_service import EmailService
+    from datetime import datetime as _dt
+
+    req_obj = db.query(Requisicao).filter(Requisicao.id == req_id).first()
+    if not req_obj:
+        raise HTTPException(status_code=404, detail=f"REQ-{req_id:04d} não encontrada.")
+
+    itens = [
+        {"codigo_produto": i.codigo_produto, "descricao_produto": i.descricao_produto, "quantidade_solicitada": i.quantidade_solicitada}
+        for i in req_obj.itens
+    ]
+    assunto, corpo = EmailService.template_nova_requisicao(req_obj.id, req_obj.solicitante, req_obj.destino_projeto, itens)
+    ok, erro = EmailService.enviar(db, assunto, corpo)
+
+    req_obj.email_status = 'ENVIADO' if ok else 'FALHOU'
+    req_obj.email_enviado_em = _dt.now() if ok else req_obj.email_enviado_em
+    req_obj.email_erro = None if ok else erro
+    db.commit()
+
+    if not ok:
+        raise HTTPException(status_code=502, detail=f"Falha ao reenviar e-mail: {erro}")
+    return {"status": "sucesso", "mensagem": f"E-mail da REQ-{req_id:04d} reenviado com sucesso."}
+
+
 @app.post("/api/v1/auditoria/reativar")
 def auditoria_reativar(req: ReativarTagRequest, current_user: dict = Depends(get_current_user)):
     from controllers.auditoria import reativar_tag_extraviada

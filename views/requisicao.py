@@ -86,9 +86,15 @@ def tela_fazer_requisicao():
                     if projeto:
                         s, msg = TraceBoxClient.salvar_nova_requisicao(polo_alvo, projeto, solicitante, df_carrinho.to_dict('records'))
                         if s:
-                            st.success(msg)
+                            msg_req = msg.split(" ⚠️")[0]
+                            st.success(msg_req)
+                            if "⚠️ E-mail não enviado" in msg:
+                                erro_email = msg.split("⚠️ E-mail não enviado: ")[-1]
+                                st.warning(f"⚠️ E-mail não enviado: {erro_email}")
+                            else:
+                                st.caption("📧 E-mail de notificação enviado aos responsáveis.")
                             st.session_state['carrinho_req'] = []
-                            st.session_state['reset_req'] += 1 
+                            st.session_state['reset_req'] += 1
                             time.sleep(1.5)
                             st.rerun()
                         else: st.error(msg)
@@ -114,11 +120,23 @@ def tela_fazer_requisicao():
                 
                 with st.expander(f"{icone_status} REQ-{req_id:04d} | Status: {status} | Data: {req['data_solicitacao']}"):
                     st.write(f"**📍 Origem:** {req['polo_origem']} ➔ **🎯 Destino:** {req['destino_projeto']}")
-                    
+
+                    # Status do e-mail
+                    email_st = str(req.get('email_status', '')).upper()
+                    perfil = st.session_state['usuario_logado'].get('perfil', '')
+                    if email_st == 'ENVIADO':
+                        st.caption(f"📧 E-mail enviado em {req.get('email_enviado_em', '')}")
+                    elif email_st == 'FALHOU':
+                        st.warning(f"⚠️ E-mail não enviado: {req.get('email_erro', 'erro desconhecido')}")
+                        if perfil in ['Admin', 'Gestor']:
+                            if st.button("📧 Reenviar E-mail", key=f"reenvio_req_{req_id}"):
+                                ok_r, msg_r = TraceBoxClient.reenviar_email_requisicao(req_id)
+                                st.success(msg_r) if ok_r else st.error(msg_r)
+
                     if status == 'CANCELADA':
                         st.error(f"**Motivo do Cancelamento:** {req['motivo_cancelamento']}")
                         st.caption(f"Cancelado por: {req['cancelado_por']}")
-                    
+
                     df_itens = pd.DataFrame(TraceBoxClient.listar_itens_da_requisicao(req_id))
                     if not df_itens.empty:
                         st.dataframe(df_itens, hide_index=True, use_container_width=True)

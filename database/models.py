@@ -69,6 +69,9 @@ class Requisicao(Base):
     data_solicitacao = Column(DateTime)
     motivo_cancelamento = Column(String)
     cancelado_por = Column(String)
+    email_status = Column(String, default='PENDENTE')   # PENDENTE | ENVIADO | FALHOU | N/A
+    email_enviado_em = Column(DateTime, nullable=True)
+    email_erro = Column(Text, nullable=True)
 
     # Relacionamento ORM com os itens da requisição
     itens = relationship("RequisicaoItem", backref="requisicao", lazy="select")
@@ -111,6 +114,9 @@ class ManutencaoOrdem(Base):
     empresa_reparo = Column(String)
     num_orcamento = Column(String)
     status_ordem = Column(String, default='Aberta')
+    email_status = Column(String, default='PENDENTE')   # PENDENTE | ENVIADO | FALHOU | N/A
+    email_enviado_em = Column(DateTime, nullable=True)
+    email_erro = Column(Text, nullable=True)
 
 class Configuracoes(Base):
     __tablename__ = 'configuracoes'

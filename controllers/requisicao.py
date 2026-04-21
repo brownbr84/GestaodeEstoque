@@ -42,10 +42,11 @@ def salvar_nova_requisicao(polo_origem, destino, solicitante, itens):
 def listar_historico_solicitante(solicitante):
     agora_ms = int(time.time() * 1000)
     query = f"""
-        SELECT id, polo_origem, destino_projeto, status, data_solicitacao, 
-               motivo_cancelamento, cancelado_por 
-        FROM requisicoes 
-        WHERE solicitante = ? AND {agora_ms} = {agora_ms} 
+        SELECT id, polo_origem, destino_projeto, status, data_solicitacao,
+               motivo_cancelamento, cancelado_por,
+               email_status, email_enviado_em, email_erro
+        FROM requisicoes
+        WHERE solicitante = ? AND {agora_ms} = {agora_ms}
         ORDER BY data_solicitacao DESC
     """
     df = carregar_dados(query, (solicitante,))
