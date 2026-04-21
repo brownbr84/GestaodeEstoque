@@ -128,7 +128,12 @@ def configuracoes_get(current_user: dict = Depends(get_current_user), db: Sessio
         "smtp_host": config.smtp_host or "",
         "smtp_porta": config.smtp_porta or 587,
         # senha SMTP nunca é retornada ao front-end
-        "emails_destinatarios": config.emails_destinatarios or []
+        "emails_destinatarios": config.emails_destinatarios or [],
+        # Módulo Fiscal
+        "fiscal_habilitado": bool(config.fiscal_habilitado),
+        "fiscal_ambiente": config.fiscal_ambiente or "homologacao",
+        "fiscal_serie": config.fiscal_serie or "1",
+        "fiscal_numeracao_atual": config.fiscal_numeracao_atual or 1,
     }
 
 @app.put("/api/v1/configuracoes")
@@ -152,7 +157,13 @@ def configuracoes_put(req: dict, current_user: dict = Depends(get_current_user),
     if "smtp_porta" in req and req.get("smtp_porta"): config.smtp_porta = int(req.get("smtp_porta"))
     if "senha_smtp" in req and req.get("senha_smtp"):
         config.senha_smtp = criptografar(req.get("senha_smtp"))
-    
+    # Módulo Fiscal
+    if "fiscal_habilitado" in req: config.fiscal_habilitado = bool(req.get("fiscal_habilitado"))
+    if "fiscal_ambiente" in req: config.fiscal_ambiente = req.get("fiscal_ambiente")
+    if "fiscal_serie" in req: config.fiscal_serie = req.get("fiscal_serie")
+    if "fiscal_numeracao_atual" in req and req.get("fiscal_numeracao_atual") is not None:
+        config.fiscal_numeracao_atual = int(req.get("fiscal_numeracao_atual"))
+
     db.commit()
     return {"status": "sucesso"}
 

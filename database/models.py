@@ -132,6 +132,11 @@ class Configuracoes(Base):
     smtp_host = Column(String)
     smtp_porta = Column(Integer)
     emails_destinatarios = Column(JSON, default=[])
+    # ── Módulo Fiscal ────────────────────────────────────────────
+    fiscal_habilitado = Column(Boolean, default=False)
+    fiscal_ambiente = Column(String, default='homologacao')   # 'homologacao' | 'producao'
+    fiscal_serie = Column(String, default='1')
+    fiscal_numeracao_atual = Column(Integer, default=1)
 
 class Usuario(Base):
     __tablename__ = 'usuarios'

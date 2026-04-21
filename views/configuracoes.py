@@ -15,7 +15,7 @@ def tela_configuracoes_globais():
     perfil_logado = st.session_state.get("usuario_logado", {}).get("perfil", "")
     eh_admin = perfil_logado == "Admin"
 
-    abas = ["🏢 Identidade Visual", "📋 Parâmetros Dinâmicos", "📧 Automação de E-mails"]
+    abas = ["🏢 Identidade Visual", "📋 Parâmetros Dinâmicos", "📧 Automação de E-mails", "🧾 Módulo Fiscal"]
     if eh_admin:
         abas.append("👥 Gestão de Usuários")
 
@@ -120,9 +120,70 @@ def tela_configuracoes_globais():
                     st.error("Erro ao salvar configurações de e-mail.")
 
     # ==========================================
-    # ABA 4: GESTÃO DE USUÁRIOS (somente Admin)
+    # ABA 4: MÓDULO FISCAL
     # ==========================================
-    if eh_admin and len(tabs) > 3:
+    with tabs[3]:
+        st.write("### 🧾 Configurações do Módulo Fiscal")
+        st.caption("Habilite e configure a emissão de NF-e. A emissão real exige Certificado Digital A1.")
+
+        st.warning(
+            "**Estado atual da integração SEFAZ:** Não operacional por design. "
+            "O sistema gerencia rascunhos internamente. "
+            "A transmissão real à SEFAZ requer: Certificado A1 (.pfx) + PyNFe ou serviço homologado.",
+            icon="🔒"
+        )
+
+        with st.form("form_fiscal"):
+            c1, c2 = st.columns(2)
+            with c1:
+                fiscal_hab = st.toggle(
+                    "Habilitar Módulo Fiscal",
+                    value=bool(config_atual.get("fiscal_habilitado", False)),
+                    help="Habilita a tela de NF-e no menu. A emissão real ainda depende do Certificado A1."
+                )
+                fiscal_serie = st.text_input(
+                    "Série da NF-e",
+                    value=config_atual.get("fiscal_serie") or "1",
+                    help="Série padrão: 1. Série 9xx geralmente usada em homologação."
+                )
+            with c2:
+                fiscal_amb = st.selectbox(
+                    "Ambiente",
+                    ["homologacao", "producao"],
+                    index=0 if (config_atual.get("fiscal_ambiente") or "homologacao") == "homologacao" else 1,
+                    help="Homologação: sem validade fiscal. Produção: NF-e com valor legal — requer certificado."
+                )
+                fiscal_num = st.number_input(
+                    "Numeração Atual da NF",
+                    value=int(config_atual.get("fiscal_numeracao_atual") or 1),
+                    min_value=1,
+                    help="Próximo número a ser usado na emissão."
+                )
+
+            st.info(
+                "**Certificado A1 e API SEFAZ:** Não configuráveis nesta versão. "
+                "A emissão via WebService SEFAZ será habilitada em versão futura. "
+                "Consulte o suporte TraceBox para viabilidade de integração.",
+                icon="ℹ️"
+            )
+
+            if st.form_submit_button("💾 Salvar Configurações Fiscais", type="primary"):
+                ok = TraceBoxClient.update_config(
+                    fiscal_habilitado=fiscal_hab,
+                    fiscal_ambiente=fiscal_amb,
+                    fiscal_serie=fiscal_serie,
+                    fiscal_numeracao_atual=fiscal_num,
+                )
+                if ok:
+                    st.toast("Configurações fiscais salvas!", icon="🧾")
+                    import time; time.sleep(1); st.rerun()
+                else:
+                    st.error("Falha ao salvar configurações fiscais.")
+
+    # ==========================================
+    # ABA 5: GESTÃO DE USUÁRIOS (somente Admin)
+    # ==========================================
+    if eh_admin and len(tabs) > 4:
         with tabs[3]:
             st.write("### 👥 Gestão de Usuários do Sistema")
             st.caption("Crie, altere senhas e remova usuários. Somente Administradores têm acesso a esta aba.")

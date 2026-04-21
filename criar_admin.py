@@ -70,6 +70,18 @@ def _migrar_colunas_incrementais():
                 conn.commit()
                 print(f"      [OK] Coluna '{col}' adicionada à tabela requisicoes.")
 
+        cols_config = [c["name"] for c in inspector.get_columns("configuracoes")]
+        for col, ddl in [
+            ("fiscal_habilitado",     "ALTER TABLE configuracoes ADD COLUMN fiscal_habilitado INTEGER DEFAULT 0"),
+            ("fiscal_ambiente",       "ALTER TABLE configuracoes ADD COLUMN fiscal_ambiente TEXT DEFAULT 'homologacao'"),
+            ("fiscal_serie",          "ALTER TABLE configuracoes ADD COLUMN fiscal_serie TEXT DEFAULT '1'"),
+            ("fiscal_numeracao_atual","ALTER TABLE configuracoes ADD COLUMN fiscal_numeracao_atual INTEGER DEFAULT 1"),
+        ]:
+            if col not in cols_config:
+                conn.execute(_sa.text(ddl))
+                conn.commit()
+                print(f"      [OK] Coluna '{col}' adicionada à tabela configuracoes.")
+
 
 def main():
     print("=" * 55)

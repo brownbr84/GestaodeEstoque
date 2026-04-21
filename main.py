@@ -1,16 +1,15 @@
 # tracebox/main.py
 import streamlit as st
-import pandas as pd
 
 # 1. Configuração global da página (DEVE ser a primeira linha do Streamlit)
 st.set_page_config(
-    page_title="TraceBox | Torre de Controle", 
-    layout="wide", 
+    page_title="TraceBox | Torre de Controle",
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
 from database.conexao_orm import engine, Base, SessionLocal
-from database.models import Imobilizado, Movimentacao, Requisicao, RequisicaoItem, LogAuditoria, ManutencaoOrdem, Configuracoes, Usuario, Categoria, Fornecedor
+from database.models import Configuracoes  # importar o módulo registra todos os modelos no Base
 from repositories.configuracoes_repository import ConfiguracoesRepository
 from client.api_client import TraceBoxClient
 
@@ -43,12 +42,37 @@ def inicializar_e_popular_banco():
             _conn.commit()
 
         cols_config = [c["name"] for c in inspector.get_columns("configuracoes")]
-        if "smtp_host" not in cols_config:
-            _conn.execute(_sa.text("ALTER TABLE configuracoes ADD COLUMN smtp_host TEXT"))
-            _conn.commit()
-        if "smtp_porta" not in cols_config:
-            _conn.execute(_sa.text("ALTER TABLE configuracoes ADD COLUMN smtp_porta INTEGER"))
-            _conn.commit()
+        for col, ddl in [
+            ("smtp_host",            "ALTER TABLE configuracoes ADD COLUMN smtp_host TEXT"),
+            ("smtp_porta",           "ALTER TABLE configuracoes ADD COLUMN smtp_porta INTEGER"),
+            ("fiscal_habilitado",    "ALTER TABLE configuracoes ADD COLUMN fiscal_habilitado INTEGER DEFAULT 0"),
+            ("fiscal_ambiente",      "ALTER TABLE configuracoes ADD COLUMN fiscal_ambiente TEXT DEFAULT 'homologacao'"),
+            ("fiscal_serie",         "ALTER TABLE configuracoes ADD COLUMN fiscal_serie TEXT DEFAULT '1'"),
+            ("fiscal_numeracao_atual","ALTER TABLE configuracoes ADD COLUMN fiscal_numeracao_atual INTEGER DEFAULT 1"),
+        ]:
+            if col not in cols_config:
+                _conn.execute(_sa.text(ddl))
+                _conn.commit()
+
+        cols_os = [c["name"] for c in inspector.get_columns("manutencao_ordens")]
+        for col, ddl in [
+            ("email_status",     "ALTER TABLE manutencao_ordens ADD COLUMN email_status TEXT"),
+            ("email_enviado_em", "ALTER TABLE manutencao_ordens ADD COLUMN email_enviado_em DATETIME"),
+            ("email_erro",       "ALTER TABLE manutencao_ordens ADD COLUMN email_erro TEXT"),
+        ]:
+            if col not in cols_os:
+                _conn.execute(_sa.text(ddl))
+                _conn.commit()
+
+        cols_req = [c["name"] for c in inspector.get_columns("requisicoes")]
+        for col, ddl in [
+            ("email_status",     "ALTER TABLE requisicoes ADD COLUMN email_status TEXT"),
+            ("email_enviado_em", "ALTER TABLE requisicoes ADD COLUMN email_enviado_em DATETIME"),
+            ("email_erro",       "ALTER TABLE requisicoes ADD COLUMN email_erro TEXT"),
+        ]:
+            if col not in cols_req:
+                _conn.execute(_sa.text(ddl))
+                _conn.commit()
 
     try:
         with SessionLocal() as db:
@@ -100,20 +124,23 @@ def main():
     st.sidebar.markdown(f"<p style='text-align: center; color: gray; font-size: 0.9em; margin-top: 10px;'>👤 {usuario['nome'].upper()} [{usuario['perfil']}]</p>", unsafe_allow_html=True)
     st.sidebar.divider()
     
+    config_nav = TraceBoxClient.get_config() or {}
     opcoes_menu = [
-        "📈 Torre de Controle", 
-        "📦 Consulta de Matriz Física", 
-        "➕ Cadastrar Novo Ativo",          
+        "📈 Torre de Controle",
+        "📦 Consulta de Matriz Física",
+        "➕ Cadastrar Novo Ativo",
         "📋 Inventário Cíclico",
         "🛠️ Manutenção",
         "📝 Fazer Requisição (Solicitante)",
-        "📤 Logística Outbound (Saída)",   
+        "📤 Logística Outbound (Saída)",
         "📥 Logística Inbound (Entrada)",
         "🏷️ Etiquetas QR Code",
         "🖨️ Central de Relatórios",
         "🛡️ Auditoria e Compliance",
         "⚙️ Configurações do Sistema"
     ]
+    if config_nav.get("fiscal_habilitado"):
+        opcoes_menu.insert(-1, "🧾 Módulo Fiscal")
     
     menu = st.sidebar.radio("Navegação", opcoes_menu)
 
@@ -182,7 +209,12 @@ def main():
         st.session_state['produto_selecionado'] = None
         from views.configuracoes import tela_configuracoes_globais
         tela_configuracoes_globais()
-    
+
+    elif menu == "🧾 Módulo Fiscal":
+        st.session_state['produto_selecionado'] = None
+        from views.fiscal import tela_fiscal
+        tela_fiscal()
+
     elif menu == "🛡️ Auditoria e Compliance":
         st.session_state['produto_selecionado'] = None
         from views.auditoria import tela_auditoria

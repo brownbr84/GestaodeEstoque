@@ -593,6 +593,55 @@ class TraceBoxClient:
         except requests.RequestException as e:
             return False, str(e)
 
+    # ==========================================
+    # MÓDULO FISCAL
+    # ==========================================
+
+    @staticmethod
+    def preparar_nf(tipo_operacao: str, dados_mercadoria: list, dados_destinatario_remetente: dict, numero_nf_ref: str = "") -> dict:
+        try:
+            res = requests.post(f"{API_BASE_URL}/fiscal/preparar",
+                json={"tipo_operacao": tipo_operacao, "dados_mercadoria": dados_mercadoria,
+                      "dados_destinatario_remetente": dados_destinatario_remetente, "numero_nf_ref": numero_nf_ref},
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            return res.json()
+        except requests.RequestException as e:
+            return {"sucesso": False, "mensagem": str(e), "api_gratuita_disponivel": True, "aviso": None, "rascunho_id": None}
+
+    @staticmethod
+    def listar_rascunhos_nf(status: str = "PENDENTE") -> list:
+        try:
+            res = requests.get(f"{API_BASE_URL}/fiscal/rascunhos", params={"status": status},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def emitir_nf(rascunho_id: int, chave_acesso: str = "", protocolo_sefaz: str = "", numero_nf: str = "") -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/fiscal/emitir",
+                json={"rascunho_id": rascunho_id, "chave_acesso": chave_acesso,
+                      "protocolo_sefaz": protocolo_sefaz, "numero_nf": numero_nf},
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "NF emitida.")
+            return False, res.json().get("detail", "Erro ao emitir.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def cancelar_nf(rascunho_id: int, motivo: str) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/fiscal/cancelar",
+                json={"rascunho_id": rascunho_id, "motivo": motivo},
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, f"Rascunho #{rascunho_id} cancelado."
+            return False, res.json().get("detail", "Erro ao cancelar.")
+        except requests.RequestException as e:
+            return False, str(e)
+
     @staticmethod
     def reenviar_email_os(os_id: int) -> tuple[bool, str]:
         try:
