@@ -37,50 +37,48 @@ ADMIN_PERFIL  = "Admin"
 def _migrar_colunas_incrementais():
     """Adiciona colunas novas a tabelas existentes sem recriar o schema."""
     import sqlalchemy as _sa
+
+    # PostgreSQL usa TIMESTAMP; SQLite usa DATETIME
+    db_type = os.getenv("DB_TYPE", "sqlite").lower()
+    ts = "TIMESTAMP" if db_type == "postgres" else "DATETIME"
+
+    def _add(conn, tabela, col, tipo_sql):
+        conn.execute(_sa.text(f"ALTER TABLE {tabela} ADD COLUMN {col} {tipo_sql}"))
+        conn.commit()
+        print(f"      [OK] Coluna '{col}' adicionada à tabela {tabela}.")
+
     with engine.connect() as conn:
         inspector = _sa.inspect(engine)
 
-        cols_usuarios = [c["name"] for c in inspector.get_columns("usuarios")]
-        if "email" not in cols_usuarios:
-            conn.execute(_sa.text("ALTER TABLE usuarios ADD COLUMN email TEXT"))
-            conn.commit()
-            print("      [OK] Coluna 'email' adicionada à tabela usuarios.")
+        # usuarios
+        cols = [c["name"] for c in inspector.get_columns("usuarios")]
+        if "email" not in cols:
+            _add(conn, "usuarios", "email", "TEXT")
 
-        cols_config = [c["name"] for c in inspector.get_columns("configuracoes")]
-        if "smtp_host" not in cols_config:
-            conn.execute(_sa.text("ALTER TABLE configuracoes ADD COLUMN smtp_host TEXT"))
-            conn.commit()
-            print("      [OK] Coluna 'smtp_host' adicionada à tabela configuracoes.")
-        if "smtp_porta" not in cols_config:
-            conn.execute(_sa.text("ALTER TABLE configuracoes ADD COLUMN smtp_porta INTEGER"))
-            conn.commit()
-            print("      [OK] Coluna 'smtp_porta' adicionada à tabela configuracoes.")
-
-        cols_os = [c["name"] for c in inspector.get_columns("manutencao_ordens")]
-        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", "DATETIME"), ("email_erro", "TEXT")]:
-            if col not in cols_os:
-                conn.execute(_sa.text(f"ALTER TABLE manutencao_ordens ADD COLUMN {col} {tipo}"))
-                conn.commit()
-                print(f"      [OK] Coluna '{col}' adicionada à tabela manutencao_ordens.")
-
-        cols_req = [c["name"] for c in inspector.get_columns("requisicoes")]
-        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", "DATETIME"), ("email_erro", "TEXT")]:
-            if col not in cols_req:
-                conn.execute(_sa.text(f"ALTER TABLE requisicoes ADD COLUMN {col} {tipo}"))
-                conn.commit()
-                print(f"      [OK] Coluna '{col}' adicionada à tabela requisicoes.")
-
-        cols_config = [c["name"] for c in inspector.get_columns("configuracoes")]
-        for col, ddl in [
-            ("fiscal_habilitado",     "ALTER TABLE configuracoes ADD COLUMN fiscal_habilitado INTEGER DEFAULT 0"),
-            ("fiscal_ambiente",       "ALTER TABLE configuracoes ADD COLUMN fiscal_ambiente TEXT DEFAULT 'homologacao'"),
-            ("fiscal_serie",          "ALTER TABLE configuracoes ADD COLUMN fiscal_serie TEXT DEFAULT '1'"),
-            ("fiscal_numeracao_atual","ALTER TABLE configuracoes ADD COLUMN fiscal_numeracao_atual INTEGER DEFAULT 1"),
+        # configuracoes
+        cols = [c["name"] for c in inspector.get_columns("configuracoes")]
+        for col, tipo in [
+            ("smtp_host",             "TEXT"),
+            ("smtp_porta",            "INTEGER"),
+            ("fiscal_habilitado",     "INTEGER DEFAULT 0"),
+            ("fiscal_ambiente",       "TEXT DEFAULT 'homologacao'"),
+            ("fiscal_serie",          "TEXT DEFAULT '1'"),
+            ("fiscal_numeracao_atual","INTEGER DEFAULT 1"),
         ]:
-            if col not in cols_config:
-                conn.execute(_sa.text(ddl))
-                conn.commit()
-                print(f"      [OK] Coluna '{col}' adicionada à tabela configuracoes.")
+            if col not in cols:
+                _add(conn, "configuracoes", col, tipo)
+
+        # manutencao_ordens
+        cols = [c["name"] for c in inspector.get_columns("manutencao_ordens")]
+        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", ts), ("email_erro", "TEXT")]:
+            if col not in cols:
+                _add(conn, "manutencao_ordens", col, tipo)
+
+        # requisicoes
+        cols = [c["name"] for c in inspector.get_columns("requisicoes")]
+        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", ts), ("email_erro", "TEXT")]:
+            if col not in cols:
+                _add(conn, "requisicoes", col, tipo)
 
 
 def main():

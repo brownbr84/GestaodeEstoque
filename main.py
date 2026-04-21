@@ -41,37 +41,32 @@ def inicializar_e_popular_banco():
             _conn.execute(_sa.text("ALTER TABLE usuarios ADD COLUMN email TEXT"))
             _conn.commit()
 
+        import os as _os
+        _ts = "TIMESTAMP" if _os.getenv("DB_TYPE", "sqlite").lower() == "postgres" else "DATETIME"
+
         cols_config = [c["name"] for c in inspector.get_columns("configuracoes")]
-        for col, ddl in [
-            ("smtp_host",            "ALTER TABLE configuracoes ADD COLUMN smtp_host TEXT"),
-            ("smtp_porta",           "ALTER TABLE configuracoes ADD COLUMN smtp_porta INTEGER"),
-            ("fiscal_habilitado",    "ALTER TABLE configuracoes ADD COLUMN fiscal_habilitado INTEGER DEFAULT 0"),
-            ("fiscal_ambiente",      "ALTER TABLE configuracoes ADD COLUMN fiscal_ambiente TEXT DEFAULT 'homologacao'"),
-            ("fiscal_serie",         "ALTER TABLE configuracoes ADD COLUMN fiscal_serie TEXT DEFAULT '1'"),
-            ("fiscal_numeracao_atual","ALTER TABLE configuracoes ADD COLUMN fiscal_numeracao_atual INTEGER DEFAULT 1"),
+        for col, tipo in [
+            ("smtp_host",             "TEXT"),
+            ("smtp_porta",            "INTEGER"),
+            ("fiscal_habilitado",     "INTEGER DEFAULT 0"),
+            ("fiscal_ambiente",       "TEXT DEFAULT 'homologacao'"),
+            ("fiscal_serie",          "TEXT DEFAULT '1'"),
+            ("fiscal_numeracao_atual","INTEGER DEFAULT 1"),
         ]:
             if col not in cols_config:
-                _conn.execute(_sa.text(ddl))
+                _conn.execute(_sa.text(f"ALTER TABLE configuracoes ADD COLUMN {col} {tipo}"))
                 _conn.commit()
 
         cols_os = [c["name"] for c in inspector.get_columns("manutencao_ordens")]
-        for col, ddl in [
-            ("email_status",     "ALTER TABLE manutencao_ordens ADD COLUMN email_status TEXT"),
-            ("email_enviado_em", "ALTER TABLE manutencao_ordens ADD COLUMN email_enviado_em DATETIME"),
-            ("email_erro",       "ALTER TABLE manutencao_ordens ADD COLUMN email_erro TEXT"),
-        ]:
+        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", _ts), ("email_erro", "TEXT")]:
             if col not in cols_os:
-                _conn.execute(_sa.text(ddl))
+                _conn.execute(_sa.text(f"ALTER TABLE manutencao_ordens ADD COLUMN {col} {tipo}"))
                 _conn.commit()
 
         cols_req = [c["name"] for c in inspector.get_columns("requisicoes")]
-        for col, ddl in [
-            ("email_status",     "ALTER TABLE requisicoes ADD COLUMN email_status TEXT"),
-            ("email_enviado_em", "ALTER TABLE requisicoes ADD COLUMN email_enviado_em DATETIME"),
-            ("email_erro",       "ALTER TABLE requisicoes ADD COLUMN email_erro TEXT"),
-        ]:
+        for col, tipo in [("email_status", "TEXT"), ("email_enviado_em", _ts), ("email_erro", "TEXT")]:
             if col not in cols_req:
-                _conn.execute(_sa.text(ddl))
+                _conn.execute(_sa.text(f"ALTER TABLE requisicoes ADD COLUMN {col} {tipo}"))
                 _conn.commit()
 
     try:
