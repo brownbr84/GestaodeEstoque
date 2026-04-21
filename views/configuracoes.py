@@ -184,7 +184,7 @@ def tela_configuracoes_globais():
     # ABA 5: GESTÃO DE USUÁRIOS (somente Admin)
     # ==========================================
     if eh_admin and len(tabs) > 4:
-        with tabs[3]:
+        with tabs[4]:
             st.write("### 👥 Gestão de Usuários do Sistema")
             st.caption("Crie, altere senhas e remova usuários. Somente Administradores têm acesso a esta aba.")
 
