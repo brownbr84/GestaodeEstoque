@@ -1,1 +1,17 @@
-# 📚 Lista de bibliotecas (streamlit, pandas, psycopg2)
+streamlit
+pandas
+sqlalchemy==2.0.29
+python-dotenv
+qrcode
+pillow
+fastapi
+uvicorn
+psycopg2-binary
+alembic
+httpx
+pyjwt
+bcrypt
+cryptography
+slowapi
+requests
+plotly
