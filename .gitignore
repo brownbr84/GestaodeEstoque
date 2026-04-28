@@ -1,5 +1,5 @@
 # =============================================
-# Ambiente e segredos — NUNCA versionar
+# Ambiente e Segredos — NUNCA versionar
 # =============================================
 .env
 .env.local
@@ -8,7 +8,7 @@
 *.env
 
 # =============================================
-# Next.js / React
+# Next.js / Frontend
 # =============================================
 frontend/.next/
 frontend/out/
@@ -19,12 +19,19 @@ frontend/next-env.d.ts
 frontend/node_modules/
 **/node_modules/
 
-# Builds e distribuição
+# Builds
 frontend/dist/
 frontend/build/
 
 # =============================================
-# Python (caso use no projeto)
+# Documentos e Arquivos Não-Código
+# =============================================
+*.pdf
+tracebox_analise_arquitetural.md
+_arquivo_morto/
+
+# =============================================
+# Python (caso utilize no projeto)
 # =============================================
 __pycache__/
 *.py[cod]
@@ -32,22 +39,27 @@ __pycache__/
 *.pyd
 .Python
 *.egg-info/
-dist/
-build/
-.eggs/
 .venv/
 venv/
 env/
 ENV/
 
 # =============================================
-# Banco de dados e arquivos locais
+# Banco de dados local
 # =============================================
 *.db
 *.sqlite3
 
 # =============================================
-# IDEs e editores
+# Logs e temporários
+# =============================================
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# =============================================
+# IDEs e Editores
 # =============================================
 .vscode/
 .idea/
@@ -59,18 +71,3 @@ ENV/
 # =============================================
 .DS_Store
 Thumbs.db
-
-# =============================================
-# Arquivos temporários e de log
-# =============================================
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# =============================================
-# Outros
-# =============================================
-.claude/
-tracebox_analise_arquetural.md
-_arquivo_morto/
