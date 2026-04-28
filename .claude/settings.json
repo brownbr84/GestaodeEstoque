@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -c \"import secrets; print\\(secrets.token_hex\\(32\\)\\); from cryptography.fernet import Fernet; print\\(Fernet.generate_key\\(\\).decode\\(\\)\\)\")",
+      "Bash(git rm *)",
+      "Bash(git add *)",
+      "Bash(.venv/Scripts/python criar_admin.py)",
+      "Bash(.venv/Scripts/pip show *)",
+      "Bash(.venv/Scripts/python -c \"from cryptography.fernet import Fernet; print\\('OK:', Fernet.generate_key\\(\\)\\)\")",
+      "Bash(git commit -m ' *)",
+      "Bash(docker compose *)",
+      "Bash(py -c \"import ast; ast.parse\\(open\\('views/fiscal.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "PowerShell(py -c \"from cryptography.fernet import Fernet; print\\(Fernet.generate_key\\(\\).decode\\(\\)\\)\")"
+    ]
+  }
+}
