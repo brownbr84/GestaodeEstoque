@@ -58,3 +58,12 @@ _arquivo_morto/
 
 # Documentos de análise temporários
 tracebox_analise_arquitetural.md
+
+# Dependencies
+frontend/node_modules/
+.next/
+out/
+dist/
+
+# Ignorar node_modules em qualquer lugar
+**/node_modules/
