@@ -57,6 +57,7 @@ def tela_login():
                         dados_usuario = TraceBoxClient.login(usuario, senha)
                         if dados_usuario:
                             st.session_state['usuario_logado'] = dados_usuario
+                            st.query_params["t"] = dados_usuario['access_token']
                             st.rerun()
                         else:
                             st.error("❌ Credenciais inválidas ou Servidor API offline.")

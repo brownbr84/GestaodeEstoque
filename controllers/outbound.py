@@ -1,5 +1,4 @@
 import pandas as pd
-import time
 from datetime import datetime
 from database.queries import executar_query, carregar_dados
 
@@ -11,29 +10,35 @@ def setup_tabelas_outbound():
     pass
 
 def carregar_fila_pedidos(polo):
-    agora_ms = int(time.time() * 1000)
-    query = "SELECT id as true_rowid, * FROM requisicoes"
-    df = carregar_dados(query)
-    
-    if df.empty: return pd.DataFrame()
-    
-    df.columns = df.columns.str.lower()
-    for col in ['status', 'polo_origem', 'destino_projeto', 'solicitante', 'data_solicitacao']:
-        if col not in df.columns: df[col] = ""
-
-    if 'numero sequencial' in df.columns: df['id_real'] = df['numero sequencial']
-    elif 'id' in df.columns: df['id_real'] = df['id']
-    else: df['id_real'] = df['true_rowid']
-
-    df['id_num'] = df['id_real'].astype(str).str.replace(r'\D+', '', regex=True)
-    df['id_num'] = pd.to_numeric(df['id_num'], errors='coerce').fillna(0).astype(int)
-    df['id_num'] = df.apply(lambda r: r['true_rowid'] if r['id_num'] == 0 else r['id_num'], axis=1)
-    
-    df = df[df['id_num'] > 0]
-    df['polo_origem_clean'] = df['polo_origem'].astype(str).str.strip().str.upper()
-    df['status_clean'] = df['status'].astype(str).str.strip().str.upper()
-    
+    from database.models import Requisicao
     polo_upper = str(polo).strip().upper()
+
+    with SessionLocal() as session:
+        reqs = session.query(Requisicao).all()
+        rows = []
+        for req in reqs:
+            polo_orig = str(req.polo_origem or '').strip()
+            status    = str(req.status or '').strip()
+            rows.append({
+                'true_rowid':         req.id,
+                'id':                 req.id,
+                'id_num':             req.id,
+                'solicitante':        req.solicitante or '',
+                'polo_origem':        polo_orig,
+                'polo_origem_clean':  polo_orig.upper(),
+                'destino_projeto':    req.destino_projeto or '',
+                'status':             status,
+                'status_clean':       status.upper(),
+                'data_solicitacao':   str(req.data_solicitacao or ''),
+                'motivo_cancelamento': req.motivo_cancelamento or '',
+                'cancelado_por':      req.cancelado_por or '',
+                'email_status':       req.email_status or '',
+            })
+
+    if not rows:
+        return pd.DataFrame()
+
+    df = pd.DataFrame(rows)
     return df[df['polo_origem_clean'] == polo_upper].copy()
 
 def carregar_detalhes_picking(req_id_visual, polo):

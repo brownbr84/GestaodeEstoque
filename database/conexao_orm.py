@@ -16,8 +16,13 @@ if DB_TYPE == "postgres":
     DATABASE_URL = f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{db_name}"
     engine = create_engine(DATABASE_URL, echo=False)
 else:
-    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-    DB_PATH = os.path.join(BASE_DIR, "..", "estoque_ferramentas.db")
+    _db_file = os.getenv("SQLITE_PATH", "estoque_ferramentas.db")
+    _base_dir   = os.path.dirname(os.path.abspath(__file__))  # database/
+    _tracebox_dir = os.path.dirname(_base_dir)                # tracebox/
+    _root_dir   = os.path.dirname(_tracebox_dir)              # project root
+    _path_root  = os.path.join(_root_dir, _db_file)
+    _path_local = os.path.join(_tracebox_dir, _db_file)
+    DB_PATH = _path_root if os.path.exists(_path_root) else _path_local
     DATABASE_URL = f"sqlite:///{DB_PATH}"
     engine = create_engine(DATABASE_URL, echo=False, connect_args={"check_same_thread": False})
 

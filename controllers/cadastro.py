@@ -4,7 +4,7 @@ from database.models import Imobilizado, Movimentacao
 from repositories.imobilizado_repository import ImobilizadoRepository
 from datetime import date, datetime
 
-def cadastrar_novo_produto(codigo, descricao, marca, modelo, categoria, dimensoes, capacidade, valor_unit, tipo_material, tipo_controle, imagem_b64, usuario):
+def cadastrar_novo_produto(codigo, descricao, marca, modelo, categoria, dimensoes, capacidade, valor_unit, tipo_material, tipo_controle, imagem_b64, usuario, ncm="", c_ean="", orig_icms="0", cest=""):
     with SessionLocal() as db:
         repo = ImobilizadoRepository()
         check = repo.get_by_codigo(db, codigo.upper())
@@ -27,7 +27,11 @@ def cadastrar_novo_produto(codigo, descricao, marca, modelo, categoria, dimensoe
             localizacao='Geral/Catálogo',
             status='Catálogo',
             num_tag='',
-            data_aquisicao=date.today()
+            data_aquisicao=date.today(),
+            ncm=ncm or "",
+            c_ean=c_ean or "SEM GTIN",
+            orig_icms=orig_icms or "0",
+            cest=cest or "",
         )
         
         repo.create(db, novo_item)

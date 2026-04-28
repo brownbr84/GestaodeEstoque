@@ -11,6 +11,8 @@ from utils.security import verificar_senha, hash_senha, precisa_rehash, criptogr
 import jwt
 import datetime
 import os
+import re
+import xml.etree.ElementTree as ET
 # TODO (SEGURANÇA P1): mover SECRET_KEY para variável de ambiente.
 # Exemplo: SECRET_KEY = os.getenv("JWT_SECRET_KEY")
 # Nunca commite chaves secretas no código-fonte.
@@ -20,6 +22,164 @@ ACCESS_TOKEN_EXPIRE_HOURS = 12
 
 app = FastAPI(title="TraceBox API", version="1.0.0", description="API RESTful para gestão de estoque e movimentações.")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+# ── CORS — permite requisições do frontend Next.js ──────────────────────────
+from fastapi.middleware.cors import CORSMiddleware
+_allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001").split(",")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[o.strip() for o in _allowed_origins],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def _seed_e_migrar_fiscal():
+    """Garante migrações incrementais e seed de regras fiscais ao subir a API (Docker-safe)."""
+    from database.conexao_orm import engine, Base
+    import sqlalchemy as _sa
+    import logging
+    _log = logging.getLogger(__name__)
+
+    try:
+        import database.models as _models  # noqa: F401 — registra todos os modelos no Base
+        Base.metadata.create_all(bind=engine)
+    except Exception as _e:
+        _log.error(f"create_all falhou (ignorando): {_e}")
+
+    try:
+        with engine.connect() as conn:
+            inspector = _sa.inspect(engine)
+
+            # ── Migração: regras_operacao_fiscal ─────────────────────────────
+            cols_regras = [c["name"] for c in inspector.get_columns("regras_operacao_fiscal")]
+            for col, tipo in [("cst_ipi", "TEXT"), ("cst_pis", "TEXT"), ("cst_cofins", "TEXT")]:
+                if col not in cols_regras:
+                    conn.execute(_sa.text(f"ALTER TABLE regras_operacao_fiscal ADD COLUMN {col} {tipo}"))
+                    conn.commit()
+
+            # ── Migração: documentos_fiscais ─────────────────────────────────
+            cols_df = [c["name"] for c in inspector.get_columns("documentos_fiscais")]
+            for col, tipo in [
+                ("num_os",            "TEXT"),
+                ("asset_tag",         "TEXT"),
+                ("num_serie",         "TEXT"),
+                ("info_complementar", "TEXT"),
+                ("mod_frete",         "TEXT DEFAULT '9'"),
+                ("ind_final",         "INTEGER DEFAULT 0"),
+                ("ind_pres",          "INTEGER DEFAULT 0"),
+                ("status_historico",  "TEXT"),
+            ]:
+                if col not in cols_df:
+                    conn.execute(_sa.text(f"ALTER TABLE documentos_fiscais ADD COLUMN {col} {tipo}"))
+                    conn.commit()
+
+            # ── Migração: imobilizado (campos fiscais NF-e + endereçamento) ────
+            cols_imob = [c["name"] for c in inspector.get_columns("imobilizado")]
+            for col, tipo in [
+                ("ncm",            "TEXT"),
+                ("c_ean",          "TEXT DEFAULT 'SEM GTIN'"),
+                ("orig_icms",      "TEXT DEFAULT '0'"),
+                ("cest",           "TEXT DEFAULT ''"),
+                ("localizacao_id", "INTEGER"),
+            ]:
+                if col not in cols_imob:
+                    conn.execute(_sa.text(f"ALTER TABLE imobilizado ADD COLUMN {col} {tipo}"))
+                    conn.commit()
+
+            # ── Migração: documentos_fiscais_itens ───────────────────────────
+            cols_dfi = [c["name"] for c in inspector.get_columns("documentos_fiscais_itens")]
+            for col, tipo in [
+                ("c_ean",      "TEXT DEFAULT 'SEM GTIN'"),
+                ("c_ean_trib", "TEXT DEFAULT 'SEM GTIN'"),
+                ("ind_tot",    "INTEGER DEFAULT 1"),
+                ("x_ped",      "TEXT"),
+                ("n_item_ped", "TEXT"),
+                ("orig_icms",  "TEXT DEFAULT '0'"),
+                ("cest",       "TEXT"),
+                ("ipi_cst",    "TEXT"),
+                ("pis_cst",    "TEXT"),
+                ("cofins_cst", "TEXT"),
+            ]:
+                if col not in cols_dfi:
+                    conn.execute(_sa.text(f"ALTER TABLE documentos_fiscais_itens ADD COLUMN {col} {tipo}"))
+                    conn.commit()
+
+            # ── Seed: regras fiscais com CST codes ───────────────────────────
+            _REGRAS = [
+                ("Remessa para Conserto — Interna/Interestadual", "REMESSA_CONSERTO", "5915", "6915", "Remessa para conserto", "41", "53", "07", "07"),
+                ("Retorno de Conserto — Interna/Interestadual",  "RETORNO_CONSERTO", "5916", "6916", "Retorno de conserto",   "41", "53", "07", "07"),
+                ("Saída Geral — Interna/Interestadual",          "SAIDA_GERAL",      "5102", "6102", "Saída de mercadorias",  "00", "50", "01", "01"),
+                ("Entrada Geral — Interna/Interestadual",        "ENTRADA_GERAL",    "1102", "2102", "Entrada de mercadorias","00", "50", "01", "01"),
+            ]
+            for nome, tipo_op, cfop_int, cfop_inter, nat_op, cst_icms, cst_ipi, cst_pis, cst_cofins in _REGRAS:
+                existe = conn.execute(
+                    _sa.text("SELECT id FROM regras_operacao_fiscal WHERE tipo_operacao = :t"),
+                    {"t": tipo_op}
+                ).fetchone()
+                if not existe:
+                    conn.execute(
+                        _sa.text(
+                            "INSERT INTO regras_operacao_fiscal "
+                            "(nome, tipo_operacao, cfop_interno, cfop_interestadual, natureza_operacao, "
+                            "cst_icms, cst_ipi, cst_pis, cst_cofins, ativo) "
+                            "VALUES (:nome, :tipo, :cfop_int, :cfop_inter, :nat_op, "
+                            ":cst_icms, :cst_ipi, :cst_pis, :cst_cofins, 1)"
+                        ),
+                        {"nome": nome, "tipo": tipo_op, "cfop_int": cfop_int,
+                         "cfop_inter": cfop_inter, "nat_op": nat_op,
+                         "cst_icms": cst_icms, "cst_ipi": cst_ipi,
+                         "cst_pis": cst_pis, "cst_cofins": cst_cofins},
+                    )
+                else:
+                    # Atualiza CST codes se a linha já existia sem eles
+                    conn.execute(
+                        _sa.text(
+                            "UPDATE regras_operacao_fiscal SET "
+                            "cst_icms=:cst_icms, cst_ipi=:cst_ipi, cst_pis=:cst_pis, cst_cofins=:cst_cofins "
+                            "WHERE tipo_operacao=:tipo AND (cst_ipi IS NULL OR cst_ipi='')"
+                        ),
+                        {"tipo": tipo_op, "cst_icms": cst_icms, "cst_ipi": cst_ipi,
+                         "cst_pis": cst_pis, "cst_cofins": cst_cofins},
+                    )
+            conn.commit()
+
+            # ── Seed: fiscal_cfop_config ─────────────────────────────────────
+            # Cria a tabela se não existir usando o próprio ORM (SQLite e PostgreSQL)
+            from database.models import FiscalCfopConfig as _FiscalCfopConfig
+            _FiscalCfopConfig.__table__.create(engine, checkfirst=True)
+
+            _CFOP_SEEDS = [
+                ("Remessa Conserto",  "CONSERTO",      "SAIDA",   "5915", "6915", "Remessa para conserto"),
+                ("Saída Geral",       "GERAL",          "SAIDA",   "5101", "6101", "Venda de mercadoria"),
+                ("Devolução",         "DEVOLUCAO",      "SAIDA",   "5921", "6921", "Devolução de mercadoria"),
+                ("Transferência",     "TRANSFERENCIA",  "SAIDA",   "5150", "6150", "Transferência"),
+                ("Retorno Conserto",  "CONSERTO",      "ENTRADA",  "5916", "6916", "Retorno de conserto"),
+                ("Entrada Geral",     "GERAL",          "ENTRADA", "1101", "2101", "Compra de mercadoria"),
+                ("Devolução",         "DEVOLUCAO",      "ENTRADA", "5922", "6922", "Devolução recebida"),
+                ("Transferência",     "TRANSFERENCIA",  "ENTRADA", "1150", "2150", "Transferência"),
+            ]
+            for tipo_op, grupo, direcao, cfop_int, cfop_inter, nat in _CFOP_SEEDS:
+                existe_cfop = conn.execute(
+                    _sa.text("SELECT id FROM fiscal_cfop_config WHERE tipo_operacao=:t AND direcao=:d"),
+                    {"t": tipo_op, "d": direcao}
+                ).fetchone()
+                if not existe_cfop:
+                    conn.execute(
+                        _sa.text(
+                            "INSERT INTO fiscal_cfop_config "
+                            "(tipo_operacao, grupo_operacao, direcao, cfop_interno, cfop_interestadual, "
+                            "natureza_padrao, ativo) "
+                            "VALUES (:t, :g, :d, :ci, :ce, :n, 1)"
+                        ),
+                        {"t": tipo_op, "g": grupo, "d": direcao,
+                         "ci": cfop_int, "ce": cfop_inter, "n": nat},
+                    )
+            conn.commit()
+    except Exception as exc:
+        _log.warning("Migração/seed fiscal falhou: %s", exc)
 
 # P3 — Rate Limiting (slowapi)
 # Limita cada IP a 60 requisições/minuto por padrão.
@@ -107,6 +267,16 @@ def login(req: LoginRequest, db: Session = Depends(get_session)):
         "nome": user.nome,
         "perfil": user.perfil
     }
+
+@app.get("/api/v1/auth/me")
+def auth_me(current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Valida o token e devolve os dados do usuário — usado para restaurar sessão após F5."""
+    from repositories.usuario_repository import UsuarioRepository
+    repo = UsuarioRepository()
+    user = repo.get_by_username(db, current_user.get("sub"))
+    if not user:
+        raise HTTPException(status_code=401, detail="Usuário não encontrado")
+    return {"nome": user.nome, "perfil": user.perfil, "usuario": user.usuario}
 
 # ==========================================
 # ROTAS DE CONFIGURAÇÕES
@@ -431,7 +601,8 @@ def produtos(req: dict, current_user: dict = Depends(get_current_user)):
     sucesso, msg = cadastrar_novo_produto(
         req.get("codigo"), req.get("descricao"), req.get("marca"), req.get("modelo"),
         req.get("categoria"), req.get("dimensoes"), req.get("capacidade"), req.get("valor_unitario"),
-        req.get("tipo_material"), req.get("tipo_controle"), req.get("imagem_b64"), req.get("usuario_atual")
+        req.get("tipo_material"), req.get("tipo_controle"), req.get("imagem_b64"), req.get("usuario_atual"),
+        req.get("ncm", ""), req.get("c_ean", ""), req.get("orig_icms", "0"), req.get("cest", ""),
     )
     if not sucesso:
         raise HTTPException(status_code=400, detail=msg)
@@ -450,24 +621,91 @@ def produtos_codigo_detalhes(codigo: str, current_user: dict = Depends(get_curre
             
     dados_mestre = df_mestre.iloc[0].to_dict()
     
-    # 2. Inventário Físico
-    df_inv = carregar_dados("SELECT id, num_tag, localizacao, status, quantidade FROM imobilizado WHERE codigo = ? AND status != 'Catálogo' AND quantidade > 0", (codigo,))
-    inv_fisico = df_inv.to_dict(orient='records') if not df_inv.empty else []
-    
+    import math, pandas as _pd
+
+    def _clean(df):
+        """Substitui NaN/NaT por None — converte para object primeiro para preservar None em colunas numéricas."""
+        mask = _pd.notnull(df)
+        return df.astype(object).where(mask, other=None)
+
+    def _scalar(v):
+        """Converte np.int64/np.float64/NaN para tipos Python nativos."""
+        if v is None:
+            return None
+        try:
+            if math.isnan(float(v)):
+                return None
+            n = float(v)
+            return int(n) if n == int(n) else n
+        except (TypeError, ValueError):
+            return v
+
+    # 2. Inventário Físico — query base sem localizacao_id (segura mesmo sem a coluna)
+    df_inv = carregar_dados(
+        "SELECT id, num_tag, localizacao, status, quantidade "
+        "FROM imobilizado WHERE codigo = ? AND status != 'Catálogo' AND quantidade > 0",
+        (codigo,),
+    )
+    inv_fisico = _clean(df_inv).to_dict(orient='records') if not df_inv.empty else []
+
+    # 2a. Enriquece com localizacao_id + nome do bin (colunas podem não existir ainda)
+    if inv_fisico:
+        item_ids = [int(r["id"]) for r in inv_fisico]
+        ph_ids = ",".join("?" for _ in item_ids)
+
+        # Tenta buscar localizacao_id (coluna adicionada por migração; pode não existir)
+        df_loc_ids = carregar_dados(
+            f"SELECT id, localizacao_id FROM imobilizado WHERE id IN ({ph_ids})",
+            tuple(item_ids),
+        )
+        loc_id_by_item: dict = {}
+        if not df_loc_ids.empty and "localizacao_id" in df_loc_ids.columns:
+            for _, row in _clean(df_loc_ids).iterrows():
+                # None seguro: NULL vira None após _clean; nunca NaN
+                raw = row["localizacao_id"]
+                loc_id_by_item[int(row["id"])] = int(raw) if raw is not None else None
+        for r in inv_fisico:
+            r["localizacao_id"] = loc_id_by_item.get(int(r["id"]))
+
+        # Apenas IDs inteiros válidos (exclui None explicitamente)
+        ids_loc = [lid for lid in {r["localizacao_id"] for r in inv_fisico} if lid is not None]
+        loc_map: dict = {}
+        if ids_loc:
+            ph_locs = ",".join("?" for _ in ids_loc)
+            df_locs = carregar_dados(
+                f"SELECT id, codigo, descricao FROM localizacoes WHERE id IN ({ph_locs})",
+                tuple(ids_loc),
+            )
+            if not df_locs.empty:
+                for _, row in _clean(df_locs).iterrows():
+                    loc_map[int(row["id"])] = {
+                        "codigo": row["codigo"],
+                        "descricao": row["descricao"] or "",
+                    }
+        for r in inv_fisico:
+            loc = loc_map.get(r["localizacao_id"])
+            r["endereco_codigo"] = loc["codigo"] if loc else None
+            r["endereco_descricao"] = loc["descricao"] if loc else None
+
     # 3. TAGs para Calibração
     df_tags = carregar_dados('SELECT id as "ID_DB", num_tag as "TAG", localizacao as "Localização", status as "Status", ultima_manutencao as "Última Inspeção", proxima_manutencao as "Deadline Calibração" FROM imobilizado WHERE codigo = ? AND tipo_controle = \'TAG\' AND num_tag != \'\' AND status != \'Catálogo\'', (codigo,))
-    tags = df_tags.to_dict(orient='records') if not df_tags.empty else []
-    
+    tags = _clean(df_tags).to_dict(orient='records') if not df_tags.empty else []
+
     # 4. Histórico
-    ids_produto = tuple(df_inv['id'].tolist()) if not df_inv.empty else ()
+    ids_produto = tuple(int(i) for i in df_inv['id'].tolist()) if not df_inv.empty else ()
     historico = []
     if ids_produto:
         placeholders = ','.join('?' for _ in ids_produto)
         query_hist = f'SELECT m.data_movimentacao as "Data", i.num_tag as "Serial", m.tipo as "Operação", m.documento as "Doc/NF", m.responsavel as "Agente", m.destino_projeto as "Destino" FROM movimentacoes m JOIN imobilizado i ON m.ferramenta_id = i.id WHERE m.ferramenta_id IN ({placeholders}) ORDER BY m.data_movimentacao DESC LIMIT 200'
         df_hist = carregar_dados(query_hist, ids_produto)
         if not df_hist.empty:
-            historico = df_hist.to_dict(orient='records')
-            
+            historico = _clean(df_hist).to_dict(orient='records')
+
+    # Sanitiza mestre — valor_unitario e outros campos numéricos nullable
+    dados_mestre = {k: _scalar(v) if isinstance(v, (int, float)) or type(v).__module__ == 'numpy'
+                    else (None if (hasattr(v, '__class__') and 'NaT' in type(v).__name__) else v)
+                    for k, v in dados_mestre.items()}
+
     return {
         "mestre": dados_mestre,
         "inventario": inv_fisico,
@@ -1238,3 +1476,979 @@ def fiscal_cancelar(
 
     return {"status": "cancelada", "rascunho_id": rascunho.id}
 
+
+# ============================================================
+# ROTAS — CNPJ
+# ============================================================
+
+@app.get("/api/v1/cnpj/{cnpj}", tags=["CNPJ"])
+def cnpj_consultar(cnpj: str, _: dict = Depends(get_current_user)):
+    """Consulta CNPJ via BrasilAPI com validação por dígito verificador."""
+    from services.cnpj_service import CnpjService
+    resultado = CnpjService.consultar(cnpj)
+    return resultado
+
+
+# ============================================================
+# ROTAS — EMPRESA EMITENTE
+# ============================================================
+
+@app.get("/api/v1/emitente", tags=["Emitente"])
+def emitente_get(_: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Retorna os dados do emitente ativo."""
+    from services.emitente_service import EmitenteService
+    e = EmitenteService.get_ou_criar(db)
+    return EmitenteService.serializar(e)
+
+
+@app.put("/api/v1/emitente", tags=["Emitente"])
+def emitente_put(req: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Atualiza dados do emitente. Somente Admin."""
+    if current_user.get("perfil") != "Admin":
+        raise HTTPException(status_code=403, detail="Somente administradores podem alterar o emitente.")
+    from services.emitente_service import EmitenteService
+    ok, msg = EmitenteService.atualizar(db, req, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+@app.post("/api/v1/emitente/sincronizar", tags=["Emitente"])
+def emitente_sincronizar(current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Sincroniza dados do emitente via BrasilAPI usando o CNPJ cadastrado."""
+    if current_user.get("perfil") != "Admin":
+        raise HTTPException(status_code=403, detail="Somente administradores podem sincronizar o emitente.")
+    from services.emitente_service import EmitenteService
+    ok, msg, dados = EmitenteService.sincronizar_cnpj(db, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "dados": dados}
+
+
+# ============================================================
+# ROTAS — PARCEIROS
+# ============================================================
+
+class CriarParceiroRequest(BaseModel):
+    tipo: str = "CLIENTE"
+    razao_social: str
+    nome_fantasia: str = ""
+    cnpj: str = ""
+    ie: str = ""
+    im: str = ""
+    cep: str = ""
+    logradouro: str = ""
+    numero: str = ""
+    complemento: str = ""
+    bairro: str = ""
+    municipio: str = ""
+    uf: str = ""
+    codigo_ibge: str = ""
+    telefone: str = ""
+    email_contato: str = ""
+    regime_tributario: str = "REGIME_NORMAL"
+    contribuinte_icms: int = 1
+
+
+@app.get("/api/v1/parceiros", tags=["Parceiros"])
+def parceiros_listar(tipo: str = "", _: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    from repositories.parceiro_repository import ParceiroRepository
+    from services.parceiro_service import ParceiroService
+    repo = ParceiroRepository()
+    parceiros = repo.listar_ativos(db, tipo)
+    return [ParceiroService.serializar(p) for p in parceiros]
+
+
+@app.post("/api/v1/parceiros", tags=["Parceiros"])
+def parceiros_criar(req: CriarParceiroRequest, current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    if current_user.get("perfil") not in ["Admin", "Gestor"]:
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from services.parceiro_service import ParceiroService
+    ok, msg, parceiro = ParceiroService.criar(db, req.model_dump(), current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "id": parceiro.id}
+
+
+@app.put("/api/v1/parceiros/{parceiro_id}", tags=["Parceiros"])
+def parceiros_atualizar(parceiro_id: int, req: dict, current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    if current_user.get("perfil") not in ["Admin", "Gestor"]:
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from services.parceiro_service import ParceiroService
+    ok, msg = ParceiroService.atualizar(db, parceiro_id, req, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+@app.post("/api/v1/parceiros/{parceiro_id}/enriquecer", tags=["Parceiros"])
+def parceiros_enriquecer(parceiro_id: int, current_user: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    """Consulta BrasilAPI e atualiza dados do parceiro."""
+    from services.parceiro_service import ParceiroService
+    ok, msg, dados = ParceiroService.enriquecer_cnpj(db, parceiro_id, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "dados": dados}
+
+
+# ============================================================
+# ROTAS — REGRAS DE OPERAÇÃO FISCAL
+# ============================================================
+
+@app.get("/api/v1/fiscal/produtos/busca", tags=["Fiscal"])
+def fiscal_produtos_busca(
+    termo: str = "",
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Busca produtos do catálogo com campos fiscais (NCM, EAN, origem) e TAGs disponíveis."""
+    from database.models import Imobilizado
+    from sqlalchemy import or_
+
+    q = db.query(Imobilizado).filter(Imobilizado.status == "Catálogo")
+    if termo:
+        q = q.filter(
+            or_(
+                Imobilizado.codigo.ilike(f"%{termo}%"),
+                Imobilizado.descricao.ilike(f"%{termo}%"),
+            )
+        )
+    produtos = q.order_by(Imobilizado.descricao).limit(50).all()
+
+    # Pre-fetch all tags in a single query to avoid N+1
+    tags_por_codigo: dict = {}
+    if produtos:
+        codigos = [p.codigo for p in produtos]
+        tags_rows = (
+            db.query(Imobilizado.codigo, Imobilizado.num_tag)
+            .filter(
+                Imobilizado.codigo.in_(codigos),
+                Imobilizado.status != "Catálogo",
+                Imobilizado.quantidade > 0,
+                Imobilizado.num_tag != "",
+                Imobilizado.num_tag.isnot(None),
+            )
+            .all()
+        )
+        for row in tags_rows:
+            tags_por_codigo.setdefault(row.codigo, []).append(row.num_tag)
+
+    resultado = []
+    for p in produtos:
+        resultado.append({
+            "codigo":          p.codigo,
+            "descricao":       p.descricao or "",
+            "marca":           p.marca or "",
+            "modelo":          p.modelo or "",
+            "valor_unitario":  float(p.valor_unitario or 0),
+            "ncm":             (p.ncm or "") if hasattr(p, "ncm") else "",
+            "c_ean":           (p.c_ean or "SEM GTIN") if hasattr(p, "c_ean") else "SEM GTIN",
+            "orig_icms":       (p.orig_icms or "0") if hasattr(p, "orig_icms") else "0",
+            "cest":            (p.cest or "") if hasattr(p, "cest") else "",
+            "tipo_controle":   p.tipo_controle or "",
+            "tags_disponiveis": tags_por_codigo.get(p.codigo, []),
+        })
+    return resultado
+
+
+@app.get("/api/v1/fiscal/regras", tags=["Fiscal"])
+def fiscal_regras(_: dict = Depends(get_current_user), db: Session = Depends(get_session)):
+    from repositories.documento_fiscal_repository import RegraOperacaoFiscalRepository
+    repo = RegraOperacaoFiscalRepository()
+    regras = repo.listar_ativas(db)
+    return [
+        {
+            "id": r.id, "nome": r.nome, "tipo_operacao": r.tipo_operacao,
+            "cfop_interno": r.cfop_interno, "cfop_interestadual": r.cfop_interestadual,
+            "natureza_operacao": r.natureza_operacao,
+            "cst_icms": r.cst_icms or "", "csosn": r.csosn or "",
+            "permite_destaque_icms": bool(r.permite_destaque_icms),
+        }
+        for r in regras
+    ]
+
+
+# ============================================================
+# ROTAS — DOCUMENTOS FISCAIS (NF-e estruturado)
+# ============================================================
+
+class CriarDocumentoFiscalRequest(BaseModel):
+    subtipo: str                  # REMESSA_CONSERTO | RETORNO_CONSERTO | SAIDA_GERAL | ENTRADA_GERAL
+    parceiro_id: int
+    itens: list[dict]
+    serie: str = "1"
+    observacao: str = ""
+    doc_vinculado_id: int = 0
+    num_os: str = ""              # Número da OS de manutenção
+    asset_tag: str = ""           # Tag / patrimônio do bem
+    num_serie: str = ""           # Número de série do bem
+    mod_frete: str = "9"          # 0=emit, 1=dest, 2=terceiros, 9=sem frete
+    ind_final: int = 0            # 0=não consumidor final, 1=consumidor final
+    ind_pres: int = 0             # 0=não se aplica, 1=presencial, 2=internet
+
+
+class AprovarDocumentoFiscalRequest(BaseModel):
+    doc_id: int
+    numero_nf: str = ""
+    chave_acesso: str = ""
+    protocolo_sefaz: str = ""
+
+
+class CancelarDocumentoFiscalRequest(BaseModel):
+    doc_id: int
+    motivo: str
+
+
+@app.post("/api/v1/fiscal/documentos", tags=["Fiscal"])
+def fiscal_documentos_criar(
+    req: CriarDocumentoFiscalRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Cria rascunho de NF-e estruturado com CFOP parametrizado conforme subtipo."""
+    from services.documento_fiscal_service import DocumentoFiscalService
+
+    _usuario = current_user.get("sub", "sistema")
+    _op_kwargs = dict(
+        num_os=req.num_os or "",
+        asset_tag=req.asset_tag or "",
+        num_serie=req.num_serie or "",
+        mod_frete=req.mod_frete or "9",
+        ind_final=req.ind_final,
+        ind_pres=req.ind_pres,
+    )
+    metodos = {
+        "REMESSA_CONSERTO": lambda: DocumentoFiscalService.criar_remessa_conserto(
+            db, req.parceiro_id, req.itens, req.serie, req.observacao,
+            _usuario, **_op_kwargs,
+        ),
+        "RETORNO_CONSERTO": lambda: DocumentoFiscalService.criar_retorno_conserto(
+            db, req.parceiro_id, req.itens, req.serie, req.observacao,
+            req.doc_vinculado_id or None, _usuario, **_op_kwargs,
+        ),
+        "SAIDA_GERAL": lambda: DocumentoFiscalService.criar_saida_geral(
+            db, req.parceiro_id, req.itens, req.serie, req.observacao,
+            _usuario, **_op_kwargs,
+        ),
+        "ENTRADA_GERAL": lambda: DocumentoFiscalService.criar_entrada_geral(
+            db, req.parceiro_id, req.itens, req.serie, req.observacao,
+            _usuario, **_op_kwargs,
+        ),
+    }
+
+    criador = metodos.get(req.subtipo)
+    if not criador:
+        raise HTTPException(status_code=400, detail=f"Subtipo '{req.subtipo}' inválido.")
+
+    ok, msg, doc_id = criador()
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "doc_id": doc_id}
+
+
+@app.get("/api/v1/fiscal/documentos", tags=["Fiscal"])
+def fiscal_documentos_listar(
+    status: str = "RASCUNHO",
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from repositories.documento_fiscal_repository import DocumentoFiscalRepository
+    from services.documento_fiscal_service import DocumentoFiscalService
+    repo = DocumentoFiscalRepository()
+    if status.upper() == "TODOS":
+        docs = repo.listar_todos(db)
+    else:
+        docs = repo.listar_por_status(db, status)
+    return [DocumentoFiscalService.serializar(d) for d in docs]
+
+
+@app.get("/api/v1/fiscal/documentos/remessas-abertas", tags=["Fiscal"])
+def fiscal_remessas_abertas(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Lista remessas para conserto sem retorno vinculado."""
+    from repositories.documento_fiscal_repository import DocumentoFiscalRepository
+    from services.documento_fiscal_service import DocumentoFiscalService
+    repo = DocumentoFiscalRepository()
+    docs = repo.listar_remessas_abertas(db)
+    return [DocumentoFiscalService.serializar(d) for d in docs]
+
+
+@app.get("/api/v1/fiscal/os-concluidas", tags=["Fiscal"])
+def fiscal_os_concluidas(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Lista OS de manutenção concluídas para importação em NF-e."""
+    from database.models import ManutencaoOrdem, Imobilizado
+    ordens = (
+        db.query(ManutencaoOrdem)
+        .filter(ManutencaoOrdem.status_ordem == "Concluída")
+        .order_by(ManutencaoOrdem.data_entrada.desc())
+        .limit(200)
+        .all()
+    )
+    result = []
+    for os_ in ordens:
+        imob = db.query(Imobilizado).filter(
+            Imobilizado.id == os_.ferramenta_id
+        ).first() if os_.ferramenta_id else None
+        result.append({
+            "id": os_.id,
+            "codigo_ferramenta": os_.codigo_ferramenta or "",
+            "descricao": imob.descricao if imob else os_.codigo_ferramenta or "",
+            "ncm": (imob.ncm or "") if imob and hasattr(imob, "ncm") else "",
+            "c_ean": (imob.c_ean or "SEM GTIN") if imob and hasattr(imob, "c_ean") else "SEM GTIN",
+            "orig_icms": (imob.orig_icms or "0") if imob and hasattr(imob, "orig_icms") else "0",
+            "cest": (imob.cest or "") if imob and hasattr(imob, "cest") else "",
+            "valor_unitario": float(imob.valor_unitario or 0) if imob else float(os_.custo_reparo or 0),
+            "custo_reparo": float(os_.custo_reparo or 0),
+            "num_os": str(os_.id),
+            "asset_tag": os_.codigo_ferramenta or "",
+            "data_entrada": os_.data_entrada.isoformat() if os_.data_entrada else None,
+            "data_saida": os_.data_saida.isoformat() if os_.data_saida else None,
+            "empresa_reparo": os_.empresa_reparo or "",
+            "num_orcamento": os_.num_orcamento or "",
+        })
+    return result
+
+
+@app.get("/api/v1/fiscal/requisicoes-concluidas", tags=["Fiscal"])
+def fiscal_requisicoes_concluidas(
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Lista requisições concluídas do Outbound com itens e dados fiscais do catálogo."""
+    from database.models import Requisicao, RequisicaoItem, Imobilizado
+    reqs = (
+        db.query(Requisicao)
+        .filter(Requisicao.status == "Concluída")
+        .order_by(Requisicao.data_solicitacao.desc())
+        .limit(200)
+        .all()
+    )
+    result = []
+    for req in reqs:
+        itens_out = []
+        for item in req.itens:
+            imob = db.query(Imobilizado).filter(
+                Imobilizado.codigo == item.codigo_produto,
+                Imobilizado.status == "Catálogo",
+            ).first()
+            itens_out.append({
+                "codigo":         item.codigo_produto or "",
+                "descricao":      item.descricao_produto or "",
+                "quantidade":     float(item.quantidade_solicitada or 1),
+                "ncm":            (imob.ncm or "") if imob and hasattr(imob, "ncm") else "",
+                "c_ean":          (imob.c_ean or "SEM GTIN") if imob and hasattr(imob, "c_ean") else "SEM GTIN",
+                "orig_icms":      (imob.orig_icms or "0") if imob and hasattr(imob, "orig_icms") else "0",
+                "cest":           (imob.cest or "") if imob and hasattr(imob, "cest") else "",
+                "valor_unitario": float(imob.valor_unitario or 0) if imob else 0.0,
+            })
+        result.append({
+            "id":              req.id,
+            "solicitante":     req.solicitante or "",
+            "polo_origem":     req.polo_origem or "",
+            "destino_projeto": req.destino_projeto or "",
+            "data_solicitacao": req.data_solicitacao.isoformat() if req.data_solicitacao else None,
+            "itens":           itens_out,
+        })
+    return result
+
+
+@app.get("/api/v1/fiscal/documentos/{doc_id}/pdf", tags=["Fiscal"])
+def fiscal_documento_pdf(
+    doc_id: int,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Gera e retorna o DANFE-Rascunho em PDF para download."""
+    from fastapi.responses import Response
+    from repositories.documento_fiscal_repository import DocumentoFiscalRepository
+    from services.documento_fiscal_service import DocumentoFiscalService
+    from utils.danfe_pdf import gerar_danfe_rascunho
+
+    repo = DocumentoFiscalRepository()
+    doc = repo.get_by_id(db, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+
+    doc_dict = DocumentoFiscalService.serializar(doc)
+    from database.models import Configuracoes as _Conf
+    _conf = db.query(_Conf).first()
+    if _conf and _conf.logo_base64:
+        doc_dict['logo_base64'] = _conf.logo_base64
+    pdf_bytes = gerar_danfe_rascunho(doc_dict)
+
+    filename = f"DANFE_Rascunho_{doc_id:05d}.pdf"
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _gerar_xml_rascunho(doc: dict) -> bytes:
+    """Gera XML informacional (não SEFAZ-válido) do documento fiscal rascunho."""
+    root = ET.Element("nfeRascunho", versao="4.00")
+    ET.SubElement(root, "aviso").text = (
+        "RASCUNHO — SEM VALOR FISCAL — NAO TRANSMITIDO A SEFAZ"
+    )
+
+    infNFe = ET.SubElement(root, "infNFe")
+
+    ide = ET.SubElement(infNFe, "ide")
+    ET.SubElement(ide, "nNF").text    = str(doc.get("numero") or "0")
+    ET.SubElement(ide, "serie").text  = str(doc.get("serie") or "1")
+    ET.SubElement(ide, "mod").text    = "55"
+    ET.SubElement(ide, "dhEmi").text  = str(doc.get("criado_em") or "")
+    ET.SubElement(ide, "tpNF").text   = str(doc.get("tipo_nf") or "1")
+    ET.SubElement(ide, "natOp").text  = str(doc.get("natureza_operacao") or "")
+    ET.SubElement(ide, "CFOP").text   = str(doc.get("cfop") or "")
+    ET.SubElement(ide, "status").text = str(doc.get("status") or "RASCUNHO")
+
+    emit_snap = doc.get("emitente_snapshot") or {}
+    emit = ET.SubElement(infNFe, "emit")
+    ET.SubElement(emit, "CNPJ").text  = re.sub(r"\D", "", emit_snap.get("cnpj") or "")
+    ET.SubElement(emit, "xNome").text = emit_snap.get("razao_social") or ""
+    ET.SubElement(emit, "IE").text    = emit_snap.get("ie") or ""
+
+    parc_snap = doc.get("parceiro_snapshot") or {}
+    dest = ET.SubElement(infNFe, "dest")
+    ET.SubElement(dest, "CNPJ").text  = re.sub(r"\D", "", parc_snap.get("cnpj") or "")
+    ET.SubElement(dest, "xNome").text = parc_snap.get("razao_social") or ""
+    ET.SubElement(dest, "IE").text    = parc_snap.get("ie") or ""
+
+    for it in (doc.get("itens") or []):
+        det = ET.SubElement(infNFe, "det", nItem=str(it.get("sequencia", 1)))
+        prod = ET.SubElement(det, "prod")
+        ET.SubElement(prod, "cProd").text    = str(it.get("codigo_produto") or "")
+        ET.SubElement(prod, "xProd").text    = str(it.get("descricao") or "")
+        ET.SubElement(prod, "NCM").text      = str(it.get("ncm") or "")
+        ET.SubElement(prod, "CFOP").text     = str(it.get("cfop") or "")
+        ET.SubElement(prod, "uCom").text     = str(it.get("unidade") or "UN")
+        ET.SubElement(prod, "qCom").text     = str(it.get("quantidade") or "1")
+        ET.SubElement(prod, "vUnCom").text   = str(it.get("valor_unitario") or "0")
+        ET.SubElement(prod, "vProd").text    = str(it.get("valor_total") or "0")
+        ET.SubElement(prod, "cEAN").text     = str(it.get("c_ean") or "SEM GTIN")
+        ET.SubElement(prod, "origICMS").text = str(it.get("orig_icms") or "0")
+
+        imposto = ET.SubElement(det, "imposto")
+        icms = ET.SubElement(imposto, "ICMS")
+        ET.SubElement(icms, "CST").text  = str(it.get("cst_icms") or "")
+        ipi = ET.SubElement(imposto, "IPI")
+        ET.SubElement(ipi, "CST").text   = str(it.get("ipi_cst") or "")
+        pis = ET.SubElement(imposto, "PIS")
+        ET.SubElement(pis, "CST").text   = str(it.get("pis_cst") or "")
+        cof = ET.SubElement(imposto, "COFINS")
+        ET.SubElement(cof, "CST").text   = str(it.get("cofins_cst") or "")
+
+    total = ET.SubElement(infNFe, "total")
+    ET.SubElement(total, "vNF").text = str(doc.get("valor_total") or "0")
+
+    if doc.get("info_complementar"):
+        infAdic = ET.SubElement(infNFe, "infAdic")
+        ET.SubElement(infAdic, "infCpl").text = str(doc["info_complementar"])
+
+    xml_str = '<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(root, encoding="unicode")
+    return xml_str.encode("utf-8")
+
+
+@app.post("/api/v1/fiscal/documentos/{doc_id}/enviar-email", tags=["Fiscal"])
+def fiscal_documento_enviar_email(
+    doc_id: int,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    """Envia DANFE PDF + XML informacional para o e-mail do parceiro e destinatários do sistema."""
+    from repositories.documento_fiscal_repository import DocumentoFiscalRepository
+    from services.documento_fiscal_service import DocumentoFiscalService
+    from services.email_service import EmailService
+    from utils.danfe_pdf import gerar_danfe_rascunho, _SUBTIPO_LABEL
+    from database.models import Parceiro
+
+    repo = DocumentoFiscalRepository()
+    doc_obj = repo.get_by_id(db, doc_id)
+    if not doc_obj:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+
+    doc = DocumentoFiscalService.serializar(doc_obj)
+    from database.models import Configuracoes as _Conf
+    _conf = db.query(_Conf).first()
+    if _conf and _conf.logo_base64:
+        doc['logo_base64'] = _conf.logo_base64
+
+    parc = db.query(Parceiro).filter(Parceiro.id == doc_obj.parceiro_id).first()
+    parceiro_email = (parc.email_contato or "").strip() if parc else ""
+
+    try:
+        pdf_bytes = gerar_danfe_rascunho(doc)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar PDF: {exc}")
+
+    xml_bytes = _gerar_xml_rascunho(doc)
+
+    subtipo_label = _SUBTIPO_LABEL.get(doc.get("subtipo", ""), doc.get("subtipo", ""))
+    emit_nome     = (doc.get("emitente_snapshot") or {}).get("razao_social", "TraceBox WMS")
+    parc_nome     = (doc.get("parceiro_snapshot") or {}).get("razao_social", "Parceiro")
+    vl_fmt        = f"R$ {doc.get('valor_total', 0):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+    os_tag_html = ""
+    if doc.get("num_os") or doc.get("asset_tag"):
+        parts = []
+        if doc.get("num_os"):    parts.append(f"OS: <strong>{doc['num_os']}</strong>")
+        if doc.get("asset_tag"): parts.append(f"Tag: <strong>{doc['asset_tag']}</strong>")
+        if doc.get("num_serie"): parts.append(f"Série: <strong>{doc['num_serie']}</strong>")
+        os_tag_html = (
+            "<p style='background:#f0fdf4;padding:10px;border-radius:6px;margin-top:12px;'>"
+            "🔧 " + " &nbsp;|&nbsp; ".join(parts) + "</p>"
+        )
+
+    assunto = f"TraceBox WMS — DANFE Rascunho #{doc_id} | {subtipo_label} | {emit_nome}"
+    corpo_html = f"""
+<div style="font-family:Arial,sans-serif;max-width:650px;margin:auto;">
+  <div style="background:#1e40af;padding:20px;border-radius:8px 8px 0 0;">
+    <h2 style="color:white;margin:0;">🧾 Documento Fiscal — DANFE Rascunho</h2>
+    <p style="color:#bfdbfe;margin:6px 0 0;">Documento #{doc_id} — {subtipo_label}</p>
+  </div>
+  <div style="border:1px solid #e2e8f0;padding:24px;border-radius:0 0 8px 8px;">
+    <div style="background:#fef9c3;padding:12px;border-radius:6px;color:#854d0e;margin-bottom:16px;">
+      ⚠️ <strong>RASCUNHO — SEM VALOR FISCAL</strong><br>
+      Este documento é interno e não substitui a NF-e autorizada pela SEFAZ.
+    </div>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="padding:8px;color:#64748b;width:40%;">Documento</td>
+          <td style="padding:8px;font-weight:bold;">#{doc_id}</td></tr>
+      <tr style="background:#f8fafc;"><td style="padding:8px;color:#64748b;">Operação</td>
+          <td style="padding:8px;">{subtipo_label}</td></tr>
+      <tr><td style="padding:8px;color:#64748b;">CFOP</td>
+          <td style="padding:8px;">{doc.get("cfop","—")}</td></tr>
+      <tr style="background:#f8fafc;"><td style="padding:8px;color:#64748b;">Emitente</td>
+          <td style="padding:8px;">{emit_nome}</td></tr>
+      <tr><td style="padding:8px;color:#64748b;">Destinatário / Remetente</td>
+          <td style="padding:8px;">{parc_nome}</td></tr>
+      <tr style="background:#f8fafc;"><td style="padding:8px;color:#64748b;">Valor Total</td>
+          <td style="padding:8px;font-weight:bold;">{vl_fmt}</td></tr>
+      <tr><td style="padding:8px;color:#64748b;">Status</td>
+          <td style="padding:8px;">{doc.get("status","RASCUNHO")}</td></tr>
+    </table>
+    {os_tag_html}
+    <hr style="margin:20px 0;border:none;border-top:1px solid #e2e8f0;">
+    <p style="color:#64748b;font-size:12px;">
+      Segue em anexo o <strong>DANFE (PDF)</strong> e o <strong>XML informacional</strong> do documento.<br>
+      Este é um e-mail automático do sistema <strong>TraceBox WMS</strong>.
+    </p>
+  </div>
+</div>
+"""
+
+    _anexos = [
+        {"nome": f"DANFE_Rascunho_{doc_id:05d}.pdf", "dados": pdf_bytes, "tipo": "application/pdf"},
+        {"nome": f"NFe_Rascunho_{doc_id:05d}.xml",   "dados": xml_bytes, "tipo": "application/xml"},
+    ]
+
+    if parceiro_email:
+        # Envia diretamente para o e-mail do parceiro (destinatário do documento fiscal)
+        ok, erro = EmailService.enviar_fiscal_com_anexos(
+            session=db,
+            assunto=assunto,
+            corpo_html=corpo_html,
+            destinatarios=[parceiro_email],
+            anexos=_anexos,
+        )
+    else:
+        # Sem e-mail do parceiro: usa destinatários configurados no sistema (fallback)
+        ok, erro = EmailService.enviar_com_anexos(
+            session=db,
+            assunto=assunto,
+            corpo_html=corpo_html,
+            destinatarios_extra=[],
+            anexos=_anexos,
+        )
+
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Erro ao enviar e-mail: {erro}")
+
+    return {
+        "status":         "enviado",
+        "mensagem":       f"E-mail enviado com DANFE PDF e XML"
+                          + (f" para {parceiro_email}" if parceiro_email else " para destinatários do sistema") + ".",
+        "parceiro_email": parceiro_email,
+    }
+
+
+# ── CFOP Config ──────────────────────────────────────────────────────────────
+
+class CfopConfigRequest(BaseModel):
+    tipo_operacao: str
+    grupo_operacao: str = ""
+    direcao: str           # SAIDA | ENTRADA
+    cfop_interno: str
+    cfop_interestadual: str
+    natureza_padrao: str = ""
+    ativo: int = 1
+
+
+@app.get("/api/v1/fiscal/cfop-config", tags=["Fiscal"])
+def fiscal_cfop_listar(
+    direcao: str = None,
+    _: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from database.models import FiscalCfopConfig
+    q = db.query(FiscalCfopConfig).filter(FiscalCfopConfig.ativo == 1)
+    if direcao:
+        q = q.filter(FiscalCfopConfig.direcao == direcao.upper())
+    rows = q.order_by(FiscalCfopConfig.direcao, FiscalCfopConfig.tipo_operacao).all()
+    return [
+        {
+            "id": r.id,
+            "tipo_operacao": r.tipo_operacao,
+            "grupo_operacao": r.grupo_operacao,
+            "direcao": r.direcao,
+            "cfop_interno": r.cfop_interno,
+            "cfop_interestadual": r.cfop_interestadual,
+            "natureza_padrao": r.natureza_padrao,
+            "ativo": r.ativo,
+        }
+        for r in rows
+    ]
+
+
+@app.post("/api/v1/fiscal/cfop-config", tags=["Fiscal"])
+def fiscal_cfop_criar(
+    req: CfopConfigRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    if current_user.get("perfil", "").lower() not in ("admin", "gestor"):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from database.models import FiscalCfopConfig
+    from datetime import datetime as _dt
+    row = FiscalCfopConfig(
+        tipo_operacao=req.tipo_operacao,
+        grupo_operacao=req.grupo_operacao,
+        direcao=req.direcao.upper(),
+        cfop_interno=req.cfop_interno,
+        cfop_interestadual=req.cfop_interestadual,
+        natureza_padrao=req.natureza_padrao,
+        ativo=req.ativo,
+        criado_em=_dt.now(),
+        atualizado_em=_dt.now(),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return {"id": row.id, "mensagem": "Configuração CFOP criada."}
+
+
+@app.put("/api/v1/fiscal/cfop-config/{config_id}", tags=["Fiscal"])
+def fiscal_cfop_atualizar(
+    config_id: int,
+    req: CfopConfigRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    if current_user.get("perfil", "").lower() not in ("admin", "gestor"):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from database.models import FiscalCfopConfig
+    from datetime import datetime as _dt
+    row = db.query(FiscalCfopConfig).filter(FiscalCfopConfig.id == config_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Configuração não encontrada.")
+    row.tipo_operacao      = req.tipo_operacao
+    row.grupo_operacao     = req.grupo_operacao
+    row.direcao            = req.direcao.upper()
+    row.cfop_interno       = req.cfop_interno
+    row.cfop_interestadual = req.cfop_interestadual
+    row.natureza_padrao    = req.natureza_padrao
+    row.ativo              = req.ativo
+    row.atualizado_em      = _dt.now()
+    db.commit()
+    return {"mensagem": "Configuração CFOP atualizada."}
+
+
+@app.delete("/api/v1/fiscal/cfop-config/{config_id}", tags=["Fiscal"])
+def fiscal_cfop_deletar(
+    config_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    if current_user.get("perfil", "").lower() not in ("admin", "gestor"):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from database.models import FiscalCfopConfig
+    row = db.query(FiscalCfopConfig).filter(FiscalCfopConfig.id == config_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Configuração não encontrada.")
+    db.delete(row)
+    db.commit()
+    return {"mensagem": "Configuração CFOP removida."}
+
+
+@app.post("/api/v1/fiscal/documentos/aprovar", tags=["Fiscal"])
+def fiscal_documentos_aprovar(
+    req: AprovarDocumentoFiscalRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "fiscal", "adm"):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from services.documento_fiscal_service import DocumentoFiscalService
+    ok, msg = DocumentoFiscalService.aprovar(
+        db, req.doc_id, req.numero_nf, req.chave_acesso,
+        req.protocolo_sefaz, current_user.get("sub", "sistema"),
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+@app.post("/api/v1/fiscal/documentos/cancelar", tags=["Fiscal"])
+def fiscal_documentos_cancelar(
+    req: CancelarDocumentoFiscalRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "fiscal", "adm"):
+        raise HTTPException(status_code=403, detail="Acesso negado.")
+    from services.documento_fiscal_service import DocumentoFiscalService
+    ok, msg = DocumentoFiscalService.cancelar(
+        db, req.doc_id, req.motivo, current_user.get("sub", "sistema")
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOCALIZAÇÕES (Bin Addresses)
+# ══════════════════════════════════════════════════════════════════════════════
+
+class LocalizacaoCreateRequest(BaseModel):
+    filial: str
+    codigo: str
+    descricao: str = ""
+    zona: str = ""
+    doca_polo: str = ""
+
+class LocalizacaoUpdateRequest(BaseModel):
+    descricao: str = ""
+    zona: str = ""
+    doca_polo: str = ""
+    status: str = "ATIVO"
+
+class AtribuirEnderecoRequest(BaseModel):
+    item_id: int
+    localizacao_id: int | None = None
+
+
+@app.get("/api/v1/localizacoes", tags=["Localizações"])
+def localizacoes_listar(
+    filial: str = "",
+    apenas_ativas: bool = True,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from services.localizacao_service import LocalizacaoService
+    locs = LocalizacaoService.listar(db, filial=filial, apenas_ativas=apenas_ativas)
+    return [LocalizacaoService.serializar(l) for l in locs]
+
+
+@app.post("/api/v1/localizacoes", tags=["Localizações"])
+def localizacoes_criar(
+    req: LocalizacaoCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem criar localizações.")
+    from services.localizacao_service import LocalizacaoService
+    ok, msg, loc = LocalizacaoService.criar(db, req.dict(), current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return LocalizacaoService.serializar(loc)
+
+
+@app.put("/api/v1/localizacoes/atribuir-endereco", tags=["Localizações"])
+def localizacoes_atribuir(
+    req: AtribuirEnderecoRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from services.localizacao_service import LocalizacaoService
+    ok, msg = LocalizacaoService.atribuir_a_item(
+        db, req.item_id, req.localizacao_id, current_user.get("sub", "sistema")
+    )
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+@app.put("/api/v1/localizacoes/{loc_id}", tags=["Localizações"])
+def localizacoes_atualizar(
+    loc_id: int,
+    req: LocalizacaoUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem editar localizações.")
+    from services.localizacao_service import LocalizacaoService
+    ok, msg = LocalizacaoService.atualizar(db, loc_id, req.dict(), current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+@app.delete("/api/v1/localizacoes/{loc_id}", tags=["Localizações"])
+def localizacoes_inativar(
+    loc_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem inativar localizações.")
+    from services.localizacao_service import LocalizacaoService
+    ok, msg = LocalizacaoService.inativar(db, loc_id, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ESTOQUE MÍNIMO / MÁXIMO
+# ══════════════════════════════════════════════════════════════════════════════
+
+class MinMaxSalvarRequest(BaseModel):
+    produto_codigo: str
+    filial: str = ""
+    estoque_minimo: float = 0.0
+    estoque_maximo: float = 0.0
+    unidade_medida: str = "UN"
+    ativo: int = 1
+    observacao: str = ""
+
+
+@app.get("/api/v1/estoque/minmax", tags=["Estoque Min/Max"])
+def minmax_listar(
+    produto_codigo: str = "",
+    filial: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from services.estoque_minmax_service import EstoqueMinMaxService
+    return EstoqueMinMaxService.listar_com_status(db, produto_codigo=produto_codigo, filial=filial)
+
+
+@app.post("/api/v1/estoque/minmax", tags=["Estoque Min/Max"])
+def minmax_salvar(
+    req: MinMaxSalvarRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem definir Min/Max.")
+    from services.estoque_minmax_service import EstoqueMinMaxService
+    ok, msg, mm = EstoqueMinMaxService.salvar(db, req.dict(), current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "id": mm.id}
+
+
+@app.delete("/api/v1/estoque/minmax/{mm_id}", tags=["Estoque Min/Max"])
+def minmax_excluir(
+    mm_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem remover Min/Max.")
+    from services.estoque_minmax_service import EstoqueMinMaxService
+    ok, msg = EstoqueMinMaxService.excluir(db, mm_id, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ESTOQUE DE SEGURANÇA
+# ══════════════════════════════════════════════════════════════════════════════
+
+class EstoqueSegurancaSalvarRequest(BaseModel):
+    produto_codigo: str
+    filial: str = ""
+    controle_por_lote: int = 0
+    controle_por_ativo: int = 0
+    ativo: int = 1
+    janela_historica_dias: int = 90
+    lead_time_dias: int = 7
+    nivel_de_servico: float = 0.95
+
+
+@app.get("/api/v1/estoque/seguranca", tags=["Estoque Segurança"])
+def seguranca_listar(
+    produto_codigo: str = "",
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from services.estoque_seguranca_service import EstoqueSegurancaService
+    from repositories.estoque_seguranca_repository import EstoqueSegurancaRepository
+    repo = EstoqueSegurancaRepository()
+    if produto_codigo:
+        registros = repo.listar_por_produto(db, produto_codigo)
+    else:
+        registros = repo.listar_ativos(db)
+    return [EstoqueSegurancaService.serializar(es) for es in registros]
+
+
+@app.post("/api/v1/estoque/seguranca", tags=["Estoque Segurança"])
+def seguranca_salvar(
+    req: EstoqueSegurancaSalvarRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem configurar estoque de segurança.")
+    from services.estoque_seguranca_service import EstoqueSegurancaService
+    ok, msg, es = EstoqueSegurancaService.salvar(db, req.dict(), current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "id": es.id}
+
+
+@app.post("/api/v1/estoque/seguranca/{es_id}/calcular", tags=["Estoque Segurança"])
+def seguranca_calcular(
+    es_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    from services.estoque_seguranca_service import EstoqueSegurancaService
+    ok, msg, valor = EstoqueSegurancaService.calcular(db, es_id, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=400, detail=msg)
+    return {"status": "sucesso", "mensagem": msg, "estoque_seguranca": valor}
+
+
+@app.delete("/api/v1/estoque/seguranca/{es_id}", tags=["Estoque Segurança"])
+def seguranca_excluir(
+    es_id: int,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_session),
+):
+    perfil = current_user.get("perfil", "").lower()
+    if perfil not in ("admin", "gestor", "adm"):
+        raise HTTPException(status_code=403, detail="Apenas Admin ou Gestor podem remover configurações.")
+    from services.estoque_seguranca_service import EstoqueSegurancaService
+    ok, msg = EstoqueSegurancaService.excluir(db, es_id, current_user.get("sub", "sistema"))
+    if not ok:
+        raise HTTPException(status_code=404, detail=msg)
+    return {"status": "sucesso", "mensagem": msg}

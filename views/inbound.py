@@ -155,19 +155,32 @@ def tela_logistica_inbound():
             df_catalogo = pd.DataFrame(TraceBoxClient.get_catalogo_simples())
             lista_catalogo = df_catalogo.apply(lambda r: f"{r['codigo']} - {r['descricao']} [{r['tipo_material']}]", axis=1).tolist() if not df_catalogo.empty else []
             
+            # Carrega localizações da filial selecionada
+            locs_inb = TraceBoxClient.listar_localizacoes(filial=polo_destino, apenas_ativas=True)
+            opcoes_loc_inb = {"(Não definido — atribuir depois)": None}
+            for l in locs_inb:
+                opcoes_loc_inb[f"{l['codigo']} — {l.get('descricao', '')}"] = l["id"]
+
             col_form, col_cart = st.columns([1.2, 1])
-            
+
             with col_form:
                 with st.form("form_add_item_nf", clear_on_submit=True):
                     st.write("📦 **Adicionar Produto à Nota**")
                     produto_selecionado = st.selectbox("Selecione o Produto (Master Data):", [""] + lista_catalogo)
-                    
+
                     c_val, c_qtd = st.columns(2)
                     with c_val: valor_unit = st.number_input("Valor Unit. (R$)", min_value=0.0, format="%.2f")
                     with c_qtd: quantidade = st.number_input("Qtd Recebida", min_value=1, value=1)
-                    
+
+                    loc_label_sel = st.selectbox(
+                        "📍 Endereço de Armazenamento",
+                        list(opcoes_loc_inb.keys()),
+                        help="Selecione o bin/endereço físico onde o item será guardado. Cadastre localizações em ⚙️ Configurações.",
+                    )
+                    loc_id_sel = opcoes_loc_inb[loc_label_sel]
+
                     st.info("🤖 **Automação:** Ativos ganham TAGs sequenciais exclusivas. Lotes recebem etiqueta de caixa.")
-                    
+
                     if st.form_submit_button("➕ Adicionar Produto ao Lote", use_container_width=True):
                         if not produto_selecionado:
                             st.error("Selecione um produto para adicionar.")
@@ -175,18 +188,20 @@ def tela_logistica_inbound():
                             cod_puro = produto_selecionado.split(" - ")[0]
                             desc_pura = produto_selecionado.split(" - ")[1].split(" [")[0]
                             tipo_mat = produto_selecionado.split(" [")[1].replace("]", "")
-                            
-                            # Verifica duplicidade no carrinho e soma a QTD se for o mesmo valor
+
                             ja_existe = False
                             for i in st.session_state['carrinho_compras']:
-                                if i['codigo'] == cod_puro and i['valor'] == valor_unit:
+                                if i['codigo'] == cod_puro and i['valor'] == valor_unit and i.get('localizacao_id') == loc_id_sel:
                                     i['qtd'] += quantidade
                                     ja_existe = True
                                     break
-                            
+
                             if not ja_existe:
                                 st.session_state['carrinho_compras'].append({
-                                    'codigo': cod_puro, 'descricao': desc_pura, 'valor': valor_unit, 'qtd': quantidade, 'tipo': tipo_mat
+                                    'codigo': cod_puro, 'descricao': desc_pura,
+                                    'valor': valor_unit, 'qtd': quantidade, 'tipo': tipo_mat,
+                                    'localizacao_id': loc_id_sel,
+                                    'localizacao_label': loc_label_sel,
                                 })
                             st.rerun()
 
@@ -197,10 +212,14 @@ def tela_logistica_inbound():
                 else:
                     df_cart = pd.DataFrame(st.session_state['carrinho_compras'])
                     df_cart['Total'] = df_cart['valor'] * df_cart['qtd']
-                    
+                    cols_exib = ['codigo', 'qtd', 'Total']
+                    rename_map = {'codigo': 'Cód.', 'qtd': 'Qtd', 'Total': 'R$ Total'}
+                    if 'localizacao_label' in df_cart.columns:
+                        cols_exib.append('localizacao_label')
+                        rename_map['localizacao_label'] = '📍 Endereço'
                     st.dataframe(
-                        df_cart[['codigo', 'qtd', 'Total']].rename(columns={'codigo':'Cód.', 'qtd':'Qtd', 'Total':'R$ Total'}), 
-                        hide_index=True, use_container_width=True
+                        df_cart[cols_exib].rename(columns=rename_map),
+                        hide_index=True, use_container_width=True,
                     )
                     
                     valor_total_nf = df_cart['Total'].sum()
@@ -223,16 +242,18 @@ def tela_logistica_inbound():
                                 with st.spinner("A guardar os ativos e a gerar o rastreio (TAGs)..."):
                                     for item in st.session_state['carrinho_compras']:
                                         sucesso, msg, tags_novas = TraceBoxClient.processar_entrada_compra(
-                                            item['codigo'], polo_destino, nf_input, 
+                                            item['codigo'], polo_destino, nf_input,
                                             item['valor'], item['qtd'], usuario_atual
                                         )
                                         if sucesso:
+                                            loc_id = item.get('localizacao_id')
                                             if tags_novas:
-                                                # São Ativos, guarda as TAGs criadas
                                                 for t in tags_novas:
                                                     itens_para_print.append({'codigo': t['codigo'], 'descricao': t['descricao'], 'tag': t['tag'], 'tipo': 'Ativo'})
+                                                    # Atribui endereço ao item recém-criado via num_tag
+                                                    if loc_id and t.get('id'):
+                                                        TraceBoxClient.atribuir_endereco(t['id'], loc_id)
                                             else:
-                                                # É Consumo/Lote
                                                 itens_para_print.append({'codigo': item['codigo'], 'descricao': item['descricao'], 'tag': 'LOTE / CAIXA', 'tipo': 'Consumo'})
                                         else:
                                             st.error(f"Falha ao inserir {item['codigo']}: {msg}")

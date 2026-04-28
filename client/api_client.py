@@ -66,6 +66,21 @@ class TraceBoxClient:
             return False
 
     @staticmethod
+    def get_me(token: str) -> Optional[Dict[str, Any]]:
+        """Valida um token e retorna os dados do usuário — usado para restaurar sessão após F5."""
+        try:
+            res = requests.get(
+                f"{API_BASE_URL}/auth/me",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=5,
+            )
+            if res.status_code == 200:
+                return res.json()
+            return None
+        except requests.RequestException:
+            return None
+
+    @staticmethod
 
     def get_dashboard_metrics() -> Optional[Dict[str, Any]]:
         token = st.session_state.get("usuario_logado", {}).get("access_token", "")
@@ -82,7 +97,6 @@ class TraceBoxClient:
             return False, f"Erro de conexão com a API: {str(e)}"
 
     @staticmethod
-
     def get_produto_detalhes(codigo: str) -> Optional[Dict[str, Any]]:
         try:
             res = requests.get(f"{API_BASE_URL}/produtos/{codigo}/detalhes", headers=TraceBoxClient._get_headers(), timeout=10)
@@ -125,7 +139,7 @@ class TraceBoxClient:
     def cancelar_pedido(true_id: int, req_id: int, motivo: str, usuario: str) -> tuple[bool, str]:
         try:
             res = requests.post(f"{API_BASE_URL}/outbound/pedidos/cancelar", json={
-                "true_id": true_id, "req_id": req_id, "motivo": motivo, "usuario": usuario
+                "true_id": int(true_id), "req_id": int(req_id), "motivo": motivo, "usuario": usuario
             }, headers=TraceBoxClient._get_headers(), timeout=10)
             if res.status_code == 200:
                 return True, res.json().get("mensagem", "Cancelado com sucesso")
@@ -638,7 +652,10 @@ class TraceBoxClient:
                 headers=TraceBoxClient._get_headers(), timeout=15)
             if res.status_code == 200:
                 return True, f"Rascunho #{rascunho_id} cancelado."
-            return False, res.json().get("detail", "Erro ao cancelar.")
+            try:
+                return False, res.json().get("detail", "Erro ao cancelar.")
+            except Exception:
+                return False, f"Erro ao cancelar (HTTP {res.status_code})."
         except requests.RequestException as e:
             return False, str(e)
 
@@ -664,6 +681,329 @@ class TraceBoxClient:
         except requests.RequestException as e:
             return False, str(e)
 
+    # ==========================================
+    # CNPJ
+    # ==========================================
+    @staticmethod
+    def consultar_cnpj(cnpj: str) -> dict:
+        try:
+            res = requests.get(f"{API_BASE_URL}/cnpj/{cnpj}",
+                headers=TraceBoxClient._get_headers(), timeout=12)
+            if res.status_code == 200:
+                return res.json()
+            return {"status": "ERRO", "erro": res.json().get("detail", "Erro na consulta")}
+        except requests.RequestException as e:
+            return {"status": "ERRO", "erro": str(e)}
+
+    # ==========================================
+    # EMPRESA EMITENTE
+    # ==========================================
+    @staticmethod
+    def get_emitente() -> dict:
+        token = st.session_state.get("usuario_logado", {}).get("access_token", "")
+        return _cached_get(f"{API_BASE_URL}/emitente", token) or {}
+
+    @staticmethod
+    def atualizar_emitente(dados: dict) -> tuple[bool, str]:
+        try:
+            res = requests.put(f"{API_BASE_URL}/emitente", json=dados,
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                _cached_get.clear()
+                return True, res.json().get("mensagem", "Salvo.")
+            return False, res.json().get("detail", "Erro ao salvar.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def sincronizar_emitente() -> tuple[bool, str, dict]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/emitente/sincronizar",
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                _cached_get.clear()
+                d = res.json()
+                return True, d.get("mensagem", "Sincronizado."), d.get("dados", {})
+            return False, res.json().get("detail", "Erro."), {}
+        except requests.RequestException as e:
+            return False, str(e), {}
+
+    # ==========================================
+    # PARCEIROS
+    # ==========================================
+    @staticmethod
+    def listar_parceiros(tipo: str = "") -> list:
+        try:
+            params = {"tipo": tipo} if tipo else {}
+            res = requests.get(f"{API_BASE_URL}/parceiros", params=params,
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def criar_parceiro(dados: dict) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/parceiros", json=dados,
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Criado.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def atualizar_parceiro(parceiro_id: int, dados: dict) -> tuple[bool, str]:
+        try:
+            res = requests.put(f"{API_BASE_URL}/parceiros/{parceiro_id}", json=dados,
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Atualizado.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def enriquecer_parceiro(parceiro_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/parceiros/{parceiro_id}/enriquecer",
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Dados atualizados.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    # ==========================================
+    # DOCUMENTOS FISCAIS (NF-e estruturado)
+    # ==========================================
+    @staticmethod
+    def criar_documento_fiscal(
+        subtipo: str,
+        parceiro_id: int,
+        itens: list,
+        serie: str = "1",
+        observacao: str = "",
+        doc_vinculado_id: int = None,
+        num_os: str = "",
+        asset_tag: str = "",
+        num_serie: str = "",
+        mod_frete: str = "9",
+        ind_final: int = 0,
+        ind_pres: int = 0,
+    ) -> tuple[bool, str, int]:
+        try:
+            payload = {
+                "subtipo": subtipo,
+                "parceiro_id": parceiro_id,
+                "itens": itens,
+                "serie": serie,
+                "observacao": observacao,
+                "num_os": num_os or "",
+                "asset_tag": asset_tag or "",
+                "num_serie": num_serie or "",
+                "mod_frete": mod_frete or "9",
+                "ind_final": ind_final,
+                "ind_pres": ind_pres,
+            }
+            if doc_vinculado_id is not None:
+                payload["doc_vinculado_id"] = doc_vinculado_id
+            res = requests.post(f"{API_BASE_URL}/fiscal/documentos", json=payload,
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                d = res.json()
+                return True, d.get("mensagem", "Criado."), d.get("doc_id", 0)
+            return False, res.json().get("detail", "Erro."), 0
+        except requests.RequestException as e:
+            return False, str(e), 0
+
+    @staticmethod
+    def listar_documentos_fiscais(status: str = "RASCUNHO") -> list:
+        try:
+            res = requests.get(f"{API_BASE_URL}/fiscal/documentos",
+                params={"status": status},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def listar_os_para_nf() -> list:
+        try:
+            res = requests.get(f"{API_BASE_URL}/fiscal/os-concluidas",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def listar_requisicoes_para_nf() -> list:
+        try:
+            res = requests.get(f"{API_BASE_URL}/fiscal/requisicoes-concluidas",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def listar_remessas_abertas() -> list:
+        try:
+            res = requests.get(f"{API_BASE_URL}/fiscal/documentos/remessas-abertas",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def aprovar_documento_fiscal(
+        doc_id: int,
+        numero_nf: str = "",
+        chave_acesso: str = "",
+        protocolo_sefaz: str = "",
+    ) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/fiscal/documentos/aprovar",
+                json={"doc_id": doc_id, "numero_nf": numero_nf,
+                      "chave_acesso": chave_acesso, "protocolo_sefaz": protocolo_sefaz},
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Aprovado.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def cancelar_documento_fiscal(doc_id: int, motivo: str) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/fiscal/documentos/cancelar",
+                json={"doc_id": doc_id, "motivo": motivo},
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Cancelado.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro ao cancelar (HTTP {res.status_code})."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def enviar_email_nf(doc_id: int) -> tuple[bool, str]:
+        """Envia DANFE PDF + XML informacional para o parceiro e destinatários do sistema."""
+        try:
+            res = requests.post(
+                f"{API_BASE_URL}/fiscal/documentos/{doc_id}/enviar-email",
+                headers=TraceBoxClient._get_headers(),
+                timeout=30,
+            )
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "E-mail enviado.")
+            return False, res.json().get("detail", "Erro ao enviar e-mail.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def baixar_pdf_documento_fiscal(doc_id: int) -> bytes | None:
+        """Retorna bytes do PDF DANFE-Rascunho ou None em caso de falha."""
+        try:
+            res = requests.get(
+                f"{API_BASE_URL}/fiscal/documentos/{doc_id}/pdf",
+                headers=TraceBoxClient._get_headers(),
+                timeout=20,
+            )
+            if res.status_code == 200:
+                return res.content
+            return None
+        except requests.RequestException:
+            return None
+
+    @staticmethod
+    def buscar_produtos_fiscal(termo: str = "") -> list:
+        """Busca produtos do catálogo com campos fiscais (NCM, EAN, origem) e TAGs disponíveis."""
+        try:
+            res = requests.get(
+                f"{API_BASE_URL}/fiscal/produtos/busca",
+                params={"termo": termo},
+                headers=TraceBoxClient._get_headers(),
+                timeout=10,
+            )
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def listar_regras_fiscais() -> list:
+        try:
+            res = requests.get(f"{API_BASE_URL}/fiscal/regras",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def listar_cfop_configs(direcao: str = None) -> list:
+        try:
+            params = {"direcao": direcao} if direcao else {}
+            res = requests.get(f"{API_BASE_URL}/fiscal/cfop-config",
+                params=params, headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def criar_cfop_config(
+        tipo_operacao: str,
+        grupo_operacao: str,
+        direcao: str,
+        cfop_interno: str,
+        cfop_interestadual: str,
+        natureza_padrao: str = "",
+    ) -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/fiscal/cfop-config",
+                json={"tipo_operacao": tipo_operacao, "grupo_operacao": grupo_operacao,
+                      "direcao": direcao, "cfop_interno": cfop_interno,
+                      "cfop_interestadual": cfop_interestadual, "natureza_padrao": natureza_padrao},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Criado.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def atualizar_cfop_config(
+        config_id: int,
+        tipo_operacao: str,
+        grupo_operacao: str,
+        direcao: str,
+        cfop_interno: str,
+        cfop_interestadual: str,
+        natureza_padrao: str = "",
+    ) -> tuple[bool, str]:
+        try:
+            res = requests.put(f"{API_BASE_URL}/fiscal/cfop-config/{config_id}",
+                json={"tipo_operacao": tipo_operacao, "grupo_operacao": grupo_operacao,
+                      "direcao": direcao, "cfop_interno": cfop_interno,
+                      "cfop_interestadual": cfop_interestadual, "natureza_padrao": natureza_padrao},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Atualizado.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def deletar_cfop_config(config_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.delete(f"{API_BASE_URL}/fiscal/cfop-config/{config_id}",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Removido.")
+            return False, res.json().get("detail", "Erro.")
+        except requests.RequestException as e:
+            return False, str(e)
+
     @staticmethod
     def realizar_entrada_excepcional(carrinho: list, motivo: str, documento: str, usuario: str, polo: str, perfil_usuario: str) -> tuple:
         try:
@@ -677,4 +1017,186 @@ class TraceBoxClient:
             return False, res.json().get("detail", "Erro na entrada excepcional"), []
         except requests.RequestException as e:
             return False, str(e), []
+
+    # ── Localizações (Bin Addresses) ──────────────────────────────────────────
+
+    @staticmethod
+    def listar_localizacoes(filial: str = "", apenas_ativas: bool = True) -> list:
+        try:
+            params = {"filial": filial, "apenas_ativas": apenas_ativas}
+            res = requests.get(f"{API_BASE_URL}/localizacoes",
+                params=params, headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def criar_localizacao(filial: str, codigo: str, descricao: str = "",
+                          zona: str = "", doca_polo: str = "") -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/localizacoes",
+                json={"filial": filial, "codigo": codigo, "descricao": descricao,
+                      "zona": zona, "doca_polo": doca_polo},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, "Localização criada."
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def atualizar_localizacao(loc_id: int, descricao: str = "", zona: str = "",
+                              doca_polo: str = "", status: str = "ATIVO") -> tuple[bool, str]:
+        try:
+            res = requests.put(f"{API_BASE_URL}/localizacoes/{loc_id}",
+                json={"descricao": descricao, "zona": zona, "doca_polo": doca_polo, "status": status},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Atualizado.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def inativar_localizacao(loc_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.delete(f"{API_BASE_URL}/localizacoes/{loc_id}",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Inativado.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def atribuir_endereco(item_id: int, localizacao_id) -> tuple[bool, str]:
+        try:
+            res = requests.put(f"{API_BASE_URL}/localizacoes/atribuir-endereco",
+                json={"item_id": item_id, "localizacao_id": localizacao_id},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Endereço atualizado.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    # ── Estoque Mínimo / Máximo ───────────────────────────────────────────────
+
+    @staticmethod
+    def listar_minmax(produto_codigo: str = "", filial: str = "") -> list:
+        try:
+            params = {"produto_codigo": produto_codigo, "filial": filial}
+            res = requests.get(f"{API_BASE_URL}/estoque/minmax",
+                params=params, headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def salvar_minmax(produto_codigo: str, filial: str = "", estoque_minimo: float = 0,
+                      estoque_maximo: float = 0, unidade_medida: str = "UN",
+                      ativo: int = 1, observacao: str = "") -> tuple[bool, str]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/estoque/minmax",
+                json={"produto_codigo": produto_codigo, "filial": filial,
+                      "estoque_minimo": estoque_minimo, "estoque_maximo": estoque_maximo,
+                      "unidade_medida": unidade_medida, "ativo": ativo, "observacao": observacao},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Salvo.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    @staticmethod
+    def excluir_minmax(mm_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.delete(f"{API_BASE_URL}/estoque/minmax/{mm_id}",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Removido.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
+
+    # ── Estoque de Segurança ──────────────────────────────────────────────────
+
+    @staticmethod
+    def listar_seguranca(produto_codigo: str = "") -> list:
+        try:
+            params = {"produto_codigo": produto_codigo}
+            res = requests.get(f"{API_BASE_URL}/estoque/seguranca",
+                params=params, headers=TraceBoxClient._get_headers(), timeout=10)
+            return res.json() if res.status_code == 200 else []
+        except requests.RequestException:
+            return []
+
+    @staticmethod
+    def salvar_seguranca(produto_codigo: str, filial: str = "", controle_por_lote: int = 0,
+                         controle_por_ativo: int = 0, ativo: int = 1,
+                         janela_historica_dias: int = 90, lead_time_dias: int = 7,
+                         nivel_de_servico: float = 0.95) -> tuple[bool, str, int | None]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/estoque/seguranca",
+                json={"produto_codigo": produto_codigo, "filial": filial,
+                      "controle_por_lote": controle_por_lote, "controle_por_ativo": controle_por_ativo,
+                      "ativo": ativo, "janela_historica_dias": janela_historica_dias,
+                      "lead_time_dias": lead_time_dias, "nivel_de_servico": nivel_de_servico},
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                return True, data.get("mensagem", "Salvo."), data.get("id")
+            try:
+                return False, res.json().get("detail", "Erro."), None
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}.", None
+        except requests.RequestException as e:
+            return False, str(e), None
+
+    @staticmethod
+    def calcular_seguranca(es_id: int) -> tuple[bool, str, float | None]:
+        try:
+            res = requests.post(f"{API_BASE_URL}/estoque/seguranca/{es_id}/calcular",
+                headers=TraceBoxClient._get_headers(), timeout=15)
+            if res.status_code == 200:
+                data = res.json()
+                return True, data.get("mensagem", "Calculado."), data.get("estoque_seguranca")
+            try:
+                return False, res.json().get("detail", "Erro."), None
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}.", None
+        except requests.RequestException as e:
+            return False, str(e), None
+
+    @staticmethod
+    def excluir_seguranca(es_id: int) -> tuple[bool, str]:
+        try:
+            res = requests.delete(f"{API_BASE_URL}/estoque/seguranca/{es_id}",
+                headers=TraceBoxClient._get_headers(), timeout=10)
+            if res.status_code == 200:
+                return True, res.json().get("mensagem", "Removido.")
+            try:
+                return False, res.json().get("detail", "Erro.")
+            except Exception:
+                return False, f"Erro HTTP {res.status_code}."
+        except requests.RequestException as e:
+            return False, str(e)
 

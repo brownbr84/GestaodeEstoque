@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import smtplib
+from email import encoders as _encoders
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -84,6 +86,149 @@ class EmailService:
             return False, msg_erro
         except smtplib.SMTPConnectError:
             msg_erro = f"Não foi possível conectar ao servidor {cfg['host']}:{cfg['porta']}."
+            logger.error(msg_erro)
+            return False, msg_erro
+        except Exception as exc:
+            msg_erro = f"Erro inesperado ao enviar e-mail: {exc}"
+            logger.error(msg_erro)
+            return False, msg_erro
+
+    @staticmethod
+    def enviar_com_anexos(
+        session,
+        assunto: str,
+        corpo_html: str,
+        destinatarios_extra: list,
+        anexos: list,
+    ) -> tuple[bool, str]:
+        """
+        Envia e-mail com anexos binários (PDF, XML, etc.).
+
+        anexos: lista de dicts {"nome": str, "dados": bytes, "tipo": str}
+        destinatarios_extra: e-mails adicionais além dos configurados no sistema
+        """
+        cfg, erro = EmailService._obter_config_smtp(session)
+        if not cfg:
+            logger.warning("E-mail não enviado: %s", erro)
+            return False, erro
+
+        todos_dest = list(dict.fromkeys(
+            cfg["destinatarios"] + [e.strip() for e in destinatarios_extra if e and e.strip()]
+        ))
+
+        msg = MIMEMultipart()
+        msg["Subject"] = assunto
+        msg["From"]    = cfg["remetente"]
+        msg["To"]      = ", ".join(todos_dest)
+        msg.attach(MIMEText(corpo_html, "html", "utf-8"))
+
+        for anexo in anexos:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(anexo["dados"])
+            _encoders.encode_base64(part)
+            part.add_header(
+                "Content-Disposition",
+                f'attachment; filename="{anexo["nome"]}"',
+            )
+            part.add_header("Content-Type", anexo.get("tipo", "application/octet-stream"))
+            msg.attach(part)
+
+        try:
+            if cfg["porta"] == 465:
+                with smtplib.SMTP_SSL(cfg["host"], cfg["porta"]) as server:
+                    server.login(cfg["remetente"], cfg["senha"])
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(cfg["host"], cfg["porta"]) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(cfg["remetente"], cfg["senha"])
+                    server.send_message(msg)
+
+            logger.info("E-mail c/ anexos enviado: '%s' → %s", assunto, todos_dest)
+            return True, ""
+
+        except smtplib.SMTPAuthenticationError:
+            msg_erro = "Falha de autenticação SMTP. Verifique o e-mail e a senha do remetente."
+            logger.error(msg_erro)
+            return False, msg_erro
+        except smtplib.SMTPConnectError:
+            msg_erro = f"Não foi possível conectar ao servidor {cfg['host']}:{cfg['porta']}."
+            logger.error(msg_erro)
+            return False, msg_erro
+        except Exception as exc:
+            msg_erro = f"Erro inesperado ao enviar e-mail: {exc}"
+            logger.error(msg_erro)
+            return False, msg_erro
+
+    @staticmethod
+    def enviar_fiscal_com_anexos(
+        session,
+        assunto: str,
+        corpo_html: str,
+        destinatarios: list,
+        anexos: list,
+    ) -> tuple[bool, str]:
+        """
+        Envia e-mail fiscal com anexos diretamente para os destinatários explícitos.
+
+        Diferente de enviar_com_anexos, não exige emails_destinatarios configurados no sistema —
+        o parceiro fiscal é o destinatário principal.  O remetente/credenciais SMTP são lidas
+        das configurações, mas a lista de destinatários é a fornecida pelo chamador.
+
+        destinatarios: lista de e-mails (ex: [parceiro.email_contato])
+        anexos: lista de dicts {"nome": str, "dados": bytes, "tipo": str}
+        """
+        from database.models import Configuracoes
+        from utils.security import descriptografar
+
+        config = session.query(Configuracoes).first()
+        if not config or not config.email_smtp or not config.senha_smtp:
+            return False, "SMTP não configurado. Acesse Configurações → Automação de E-mails."
+
+        destinatarios_validos = [e.strip() for e in destinatarios if e and e.strip()]
+        if not destinatarios_validos:
+            return False, "Nenhum e-mail de destinatário fornecido."
+
+        senha_plain = descriptografar(config.senha_smtp)
+        host   = (config.smtp_host or "smtp.gmail.com").strip()
+        porta  = config.smtp_porta or 587
+
+        msg = MIMEMultipart()
+        msg["Subject"] = assunto
+        msg["From"]    = config.email_smtp
+        msg["To"]      = ", ".join(destinatarios_validos)
+        msg.attach(MIMEText(corpo_html, "html", "utf-8"))
+
+        for anexo in anexos:
+            part = MIMEBase("application", "octet-stream")
+            part.set_payload(anexo["dados"])
+            _encoders.encode_base64(part)
+            part.add_header("Content-Disposition", f'attachment; filename="{anexo["nome"]}"')
+            part.add_header("Content-Type", anexo.get("tipo", "application/octet-stream"))
+            msg.attach(part)
+
+        try:
+            if porta == 465:
+                with smtplib.SMTP_SSL(host, porta) as server:
+                    server.login(config.email_smtp, senha_plain)
+                    server.send_message(msg)
+            else:
+                with smtplib.SMTP(host, porta) as server:
+                    server.ehlo()
+                    server.starttls()
+                    server.login(config.email_smtp, senha_plain)
+                    server.send_message(msg)
+
+            logger.info("E-mail fiscal enviado: '%s' → %s", assunto, destinatarios_validos)
+            return True, ""
+
+        except smtplib.SMTPAuthenticationError:
+            msg_erro = "Falha de autenticação SMTP. Verifique o e-mail e a senha do remetente."
+            logger.error(msg_erro)
+            return False, msg_erro
+        except smtplib.SMTPConnectError:
+            msg_erro = f"Não foi possível conectar ao servidor {host}:{porta}."
             logger.error(msg_erro)
             return False, msg_erro
         except Exception as exc:
